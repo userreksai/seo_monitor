@@ -43,6 +43,7 @@ func New(st *store.Store, location *time.Location, apiToken string, origins []st
 	mux.HandleFunc("GET /api/v1/domains", server.listDomains)
 	mux.HandleFunc("POST /api/v1/domains", server.createDomain)
 	mux.HandleFunc("POST /api/v1/domains/bulk", server.bulkDomains)
+	mux.HandleFunc("GET /api/v1/search", server.searchLatest)
 	mux.HandleFunc("GET /api/v1/domains/{id}", server.getDomain)
 	mux.HandleFunc("PATCH /api/v1/domains/{id}", server.updateDomain)
 	mux.HandleFunc("DELETE /api/v1/domains/{id}", server.deleteDomain)
@@ -306,6 +307,46 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+func (s *Server) searchLatest(w http.ResponseWriter, r *http.Request) {
+	field := strings.TrimSpace(r.URL.Query().Get("field"))
+	if field == "" {
+		field = "domain"
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	page := int64(1)
+	limit := int64(50)
+	if raw := r.URL.Query().Get("page"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 1 {
+			writeError(w, http.StatusBadRequest, "page 必须为正整数")
+			return
+		}
+		page = parsed
+	}
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeError(w, http.StatusBadRequest, "limit 必须在 1 到 100 之间")
+			return
+		}
+		limit = parsed
+	}
+
+	items, total, err := s.store.SearchLatest(r.Context(), field, query, page, limit)
+	if errors.Is(err, store.ErrInvalidSearch) {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "搜索最新指标失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items, "count": len(items), "total": total,
+		"page": page, "limit": limit, "field": field, "q": query,
+	})
 }
 
 func objectID(w http.ResponseWriter, r *http.Request) (primitive.ObjectID, bool) {

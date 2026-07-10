@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -16,9 +19,35 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("not found")
-	ErrConflict = errors.New("conflict")
+	ErrNotFound      = errors.New("not found")
+	ErrConflict      = errors.New("conflict")
+	ErrInvalidSearch = errors.New("invalid search")
 )
+
+type latestSearchField struct {
+	Path    string
+	Numeric bool
+}
+
+var latestSearchFields = map[string]latestSearchField{
+	"domain":              {Path: "domain"},
+	"display_name":        {Path: "display_name"},
+	"site_category":       {Path: "metric.site_category"},
+	"registrant_name":     {Path: "metric.registrant_name"},
+	"registrant_email":    {Path: "metric.registrant_email"},
+	"baidu_pc_weight":     {Path: "metric.baidu_pc_weight", Numeric: true},
+	"baidu_mobile_weight": {Path: "metric.baidu_mobile_weight", Numeric: true},
+	"sogou_weight":        {Path: "metric.sogou_weight", Numeric: true},
+	"bing_weight":         {Path: "metric.bing_weight", Numeric: true},
+	"so_360_weight":       {Path: "metric.so_360_weight", Numeric: true},
+	"shenma_weight":       {Path: "metric.shenma_weight", Numeric: true},
+	"pr_weight":           {Path: "metric.pr_weight", Numeric: true},
+	"apppc_pc_rank":       {Path: "metric.apppc_pc_rank", Numeric: true},
+	"backlink_count":      {Path: "metric.backlink_count", Numeric: true},
+	"traffic_min":         {Path: "metric.traffic_min", Numeric: true},
+	"traffic_max":         {Path: "metric.traffic_max", Numeric: true},
+	"domain_age_days":     {Path: "metric.domain_age_days", Numeric: true},
+}
 
 type Store struct {
 	client  *mongo.Client
@@ -339,4 +368,115 @@ func (s *Store) ListJobs(ctx context.Context, status string, limit int64) ([]mod
 		return nil, err
 	}
 	return items, nil
+}
+
+// SearchLatest returns active domains with their newest metric snapshot. Only
+// fields in latestSearchFields are accepted, preventing arbitrary MongoDB paths
+// from being supplied by API callers.
+func (s *Store) SearchLatest(ctx context.Context, field, query string, page, limit int64) ([]model.LatestMetric, int64, error) {
+	match, err := latestSearchMatch(field, query)
+	if err != nil {
+		return nil, 0, err
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+
+	lookupStage := bson.D{{Key: "$lookup", Value: bson.M{
+		"from": "domain_daily_metrics",
+		"let":  bson.M{"domainID": "$_id"},
+		"pipeline": mongo.Pipeline{
+			bson.D{{Key: "$match", Value: bson.M{
+				"$expr": bson.M{"$eq": bson.A{"$domain_id", "$$domainID"}},
+			}}},
+			bson.D{{Key: "$sort", Value: bson.M{"snapshot_date": -1}}},
+			bson.D{{Key: "$limit", Value: 1}},
+		},
+		"as": "metric_docs",
+	}}}
+	setMetricStage := bson.D{{Key: "$set", Value: bson.M{
+		"metric": bson.M{"$arrayElemAt": bson.A{"$metric_docs", 0}},
+	}}}
+	pipeline := mongo.Pipeline{
+		bson.D{{Key: "$match", Value: bson.M{"active": true}}},
+		lookupStage,
+		setMetricStage,
+	}
+	if len(match) > 0 {
+		pipeline = append(pipeline, bson.D{{Key: "$match", Value: match}})
+	}
+	pipeline = append(pipeline,
+		bson.D{{Key: "$sort", Value: bson.D{{Key: "domain", Value: 1}}}},
+		bson.D{{Key: "$facet", Value: bson.D{
+			{Key: "items", Value: mongo.Pipeline{
+				bson.D{{Key: "$skip", Value: (page - 1) * limit}},
+				bson.D{{Key: "$limit", Value: limit}},
+				bson.D{{Key: "$project", Value: bson.D{
+					{Key: "_id", Value: 0},
+					{Key: "domain_record", Value: bson.D{
+						{Key: "_id", Value: "$_id"},
+						{Key: "domain", Value: "$domain"},
+						{Key: "display_name", Value: "$display_name"},
+						{Key: "active", Value: "$active"},
+						{Key: "created_at", Value: "$created_at"},
+						{Key: "updated_at", Value: "$updated_at"},
+						{Key: "archived_at", Value: "$archived_at"},
+					}},
+					{Key: "metric", Value: "$metric"},
+				}}},
+			}},
+			{Key: "total", Value: mongo.Pipeline{
+				bson.D{{Key: "$count", Value: "value"}},
+			}},
+		}}},
+	)
+
+	cursor, err := s.domains.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer cursor.Close(ctx)
+	var result []struct {
+		Items []model.LatestMetric `bson:"items"`
+		Total []struct {
+			Value int64 `bson:"value"`
+		} `bson:"total"`
+	}
+	if err := cursor.All(ctx, &result); err != nil {
+		return nil, 0, err
+	}
+	if len(result) == 0 {
+		return []model.LatestMetric{}, 0, nil
+	}
+	total := int64(0)
+	if len(result[0].Total) > 0 {
+		total = result[0].Total[0].Value
+	}
+	return result[0].Items, total, nil
+}
+
+func latestSearchMatch(field, query string) (bson.D, error) {
+	field = strings.TrimSpace(field)
+	if field == "" {
+		field = "domain"
+	}
+	spec, ok := latestSearchFields[field]
+	if !ok {
+		return nil, fmt.Errorf("%w: unsupported field %q", ErrInvalidSearch, field)
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	if spec.Numeric {
+		value, err := strconv.ParseInt(query, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%w: field %s requires an integer", ErrInvalidSearch, field)
+		}
+		return bson.D{{Key: spec.Path, Value: value}}, nil
+	}
+	return bson.D{{Key: spec.Path, Value: primitive.Regex{Pattern: regexp.QuoteMeta(query), Options: "i"}}}, nil
 }

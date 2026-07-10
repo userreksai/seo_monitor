@@ -247,6 +247,7 @@ Content-Type: application/json
 | `POST` | `/api/v1/collect` | 排队采集全部启用域名 |
 | `GET` | `/api/v1/domains/{id}/latest` | 最新快照 |
 | `GET` | `/api/v1/domains/{id}/metrics?from=2026-01-01&to=2026-07-10` | 趋势数据 |
+| `GET` | `/api/v1/search?field=domain&q=example&page=1&limit=50` | 按指定字段搜索域名及最新指标 |
 | `GET` | `/api/v1/jobs?status=failed&limit=100` | 任务与错误记录 |
 
 新增一个域名：
