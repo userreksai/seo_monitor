@@ -56,8 +56,8 @@ type Metric struct {
 }
 
 type LatestMetric struct {
-	Domain Domain  `json:"domain"`
-	Metric *Metric `json:"metric,omitempty"`
+	Domain Domain  `bson:"domain_record" json:"domain"`
+	Metric *Metric `bson:"metric,omitempty" json:"metric,omitempty"`
 }
 
 type CollectionJob struct {
