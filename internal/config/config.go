@@ -11,6 +11,7 @@ import (
 type Config struct {
 	MongoDBURI       string
 	MongoDBDatabase  string
+	DomainsFile      string
 	HTTPAddr         string
 	APIToken         string
 	AllowedOrigins   []string
@@ -34,6 +35,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		MongoDBURI:       env("MONGODB_URI", "mongodb://localhost:27017"),
 		MongoDBDatabase:  env("MONGODB_DATABASE", "seo_monitor"),
+		DomainsFile:      env("DOMAINS_FILE", "domains.json"),
 		HTTPAddr:         env("HTTP_ADDR", "127.0.0.1:8080"),
 		APIToken:         os.Getenv("API_TOKEN"),
 		AllowedOrigins:   splitCSV(os.Getenv("CORS_ALLOWED_ORIGINS")),

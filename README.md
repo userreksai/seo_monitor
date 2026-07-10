@@ -97,6 +97,27 @@ COLLECT_CRON=15 2 * * *
 QUEUE_ON_START=true
 ```
 
+### 域名文件
+
+服务默认读取当前工作目录的 `domains.json`。systemd 的工作目录为 `/usr/local/seo_monitor`，所以对应完整路径是 `/usr/local/seo_monitor/domains.json`。推荐使用标准 JSON 数组：
+
+```json
+[
+  "123.com",
+  "222.com",
+  "4444.com",
+  "baibai.com"
+]
+```
+
+也支持对象格式 `{"domains":["123.com","222.com"]}`，以及兼容未加引号、带尾逗号的宽松格式。服务启动时导入一次，每天定时任务开始前会再次读取；新域名自动写入 MongoDB 并进入采集队列。重复域名会被忽略，非法域名会让程序明确报错。
+
+该文件执行增量导入，从文件删除域名不会删除历史数据；需要停用时使用域名 CRUD API。可通过环境变量指定其他文件，相对路径仍以程序当前工作目录为基准：
+
+```dotenv
+DOMAINS_FILE=domains.json
+```
+
 默认只有一个采集 Worker，每次请求随机间隔 3–8 秒。即使域名扩到几百个，也建议先保持低并发，避免给来源站造成压力或触发限流。
 
 ## 三、服务器源码部署（不使用 Docker）
@@ -270,6 +291,7 @@ internal/collector/          Worker 与日期逻辑
 internal/httpapi/            域名 CRUD、采集、趋势 API
 scripts/mongo-init.js        新建 seo_monitor 库、字段校验、索引
 build.sh                     源码测试与编译（可从任意目录调用）
+domains.json                 每日采集域名列表
 scripts/build.sh             兼容入口，转发到根目录 build.sh
 deploy/seo-monitor.service   Linux systemd 服务配置
 ```
