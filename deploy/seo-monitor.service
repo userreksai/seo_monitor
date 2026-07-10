@@ -1,0 +1,23 @@
+[Unit]
+Description=SEO domain daily metrics collector
+Wants=network-online.target
+After=network-online.target mongod.service
+
+[Service]
+Type=simple
+User=seo-monitor
+Group=seo-monitor
+WorkingDirectory=/opt/seo-monitor
+EnvironmentFile=/opt/seo-monitor/.env
+ExecStart=/opt/seo-monitor/bin/seo-monitor
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
