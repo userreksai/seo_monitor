@@ -106,15 +106,15 @@ QUEUE_ON_START=true
 ### 1. 上传源码并编译
 
 ```bash
-sudo useradd --system --home /opt/seo-monitor --shell /usr/sbin/nologin seo-monitor
-sudo mkdir -p /opt/seo-monitor
-sudo chown -R "$USER":seo-monitor /opt/seo-monitor
-cd /opt/seo-monitor
+sudo useradd --system --home /usr/local/seo_monitor --shell /usr/sbin/nologin seo-monitor
+sudo mkdir -p /usr/local/seo_monitor
+sudo chown -R "$USER":seo-monitor /usr/local/seo_monitor
+cd /usr/local/seo_monitor
 # 将本项目全部源码上传到这里后执行：
-sh scripts/build.sh
+sh build.sh
 ```
 
-`scripts/build.sh` 会依次下载 Go 依赖、运行测试并生成 `bin/seo-monitor`。也可以手动执行：
+根目录 `build.sh` 会自动定位项目目录，因此可以从任意工作目录调用；它会依次下载 Go 依赖、运行测试并生成 `bin/seo-monitor`。`sh scripts/build.sh` 仍然兼容。也可以手动执行：
 
 ```bash
 go mod download
@@ -126,7 +126,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/seo-monitor ./cmd/serve
 ### 2. 初始化独立数据库
 
 ```bash
-cd /opt/seo-monitor
+cd /usr/local/seo_monitor
 mongosh 'mongodb://管理员:密码@127.0.0.1:27017/admin?authSource=admin' --file scripts/mongo-init.js
 ```
 
@@ -135,7 +135,7 @@ mongosh 'mongodb://管理员:密码@127.0.0.1:27017/admin?authSource=admin' --fi
 ### 3. 写运行配置
 
 ```bash
-cd /opt/seo-monitor
+cd /usr/local/seo_monitor
 cp .env.example .env
 chmod 600 .env
 ```
@@ -146,7 +146,7 @@ chmod 600 .env
 
 ```bash
 sudo cp deploy/seo-monitor.service /etc/systemd/system/seo-monitor.service
-sudo chown -R seo-monitor:seo-monitor /opt/seo-monitor
+sudo chown -R seo-monitor:seo-monitor /usr/local/seo_monitor
 sudo systemctl daemon-reload
 sudo systemctl enable --now seo-monitor
 sudo systemctl status seo-monitor
@@ -156,9 +156,9 @@ journalctl -u seo-monitor -f
 更新代码时：
 
 ```bash
-cd /opt/seo-monitor
+cd /usr/local/seo_monitor
 sudo systemctl stop seo-monitor
-sudo -u seo-monitor sh scripts/build.sh
+sudo -u seo-monitor sh build.sh
 sudo systemctl start seo-monitor
 ```
 
@@ -269,6 +269,7 @@ internal/store/              MongoDB、唯一索引、持久任务队列
 internal/collector/          Worker 与日期逻辑
 internal/httpapi/            域名 CRUD、采集、趋势 API
 scripts/mongo-init.js        新建 seo_monitor 库、字段校验、索引
-scripts/build.sh             源码测试与编译
+build.sh                     源码测试与编译（可从任意目录调用）
+scripts/build.sh             兼容入口，转发到根目录 build.sh
 deploy/seo-monitor.service   Linux systemd 服务配置
 ```

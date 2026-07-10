@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-go mod download
-go test ./...
-mkdir -p bin
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/seo-monitor ./cmd/server
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+
+exec sh "$PROJECT_DIR/build.sh"
