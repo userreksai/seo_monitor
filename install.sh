@@ -162,7 +162,23 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
   } >"$INSTALL_DIR/.env"
   log "Created $INSTALL_DIR/.env with a generated API token"
 else
-  log "Keeping existing $INSTALL_DIR/.env"
+  ENV_TEMP=$(mktemp "$INSTALL_DIR/.env.XXXXXX")
+  awk '
+    BEGIN { updated = 0 }
+    /^HTTP_ADDR=/ {
+      if (!updated) {
+        print "HTTP_ADDR=127.0.0.1:10001"
+        updated = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!updated) print "HTTP_ADDR=127.0.0.1:10001"
+    }
+  ' "$INSTALL_DIR/.env" >"$ENV_TEMP"
+  mv "$ENV_TEMP" "$INSTALL_DIR/.env"
+  log "Keeping existing $INSTALL_DIR/.env and setting HTTP_ADDR to 127.0.0.1:10001"
 fi
 chmod 600 "$INSTALL_DIR/.env"
 
