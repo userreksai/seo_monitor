@@ -36,7 +36,7 @@ func Load() (Config, error) {
 		MongoDBURI:       env("MONGODB_URI", "mongodb://localhost:27017"),
 		MongoDBDatabase:  env("MONGODB_DATABASE", "seo_monitor"),
 		DomainsFile:      env("DOMAINS_FILE", "domains.json"),
-		HTTPAddr:         env("HTTP_ADDR", "127.0.0.1:8080"),
+		HTTPAddr:         env("HTTP_ADDR", "127.0.0.1:10001"),
 		APIToken:         os.Getenv("API_TOKEN"),
 		AllowedOrigins:   splitCSV(os.Getenv("CORS_ALLOWED_ORIGINS")),
 		EnsureIndexes:    envBool("ENSURE_INDEXES", true),
