@@ -14,6 +14,7 @@ APP_MONGODB_URI=${MONGODB_URI:-mongodb://127.0.0.1:27017}
 MONGO_ADMIN_URI=${MONGO_ADMIN_URI:-$APP_MONGODB_URI}
 SKIP_MONGO_INIT=${SKIP_MONGO_INIT:-0}
 DOMAINS_BACKUP=
+LEGACY_BACKUP=
 
 log() {
   printf '\n==> %s\n' "$*"
@@ -60,6 +61,7 @@ trap 'exit 1' HUP INT TERM
 
 require_command git
 require_command go
+require_command find
 require_command systemctl
 require_command useradd
 if [ "$SKIP_MONGO_INIT" != "1" ]; then
@@ -86,10 +88,41 @@ if [ -d "$INSTALL_DIR/.git" ]; then
   git_repo pull --ff-only origin "$BRANCH"
 else
   if [ -d "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
-    fail "$INSTALL_DIR exists and is not an empty Git repository"
+    if [ -L "$INSTALL_DIR" ]; then
+      fail "$INSTALL_DIR is a symbolic link; refusing to replace it"
+    fi
+    if [ -f "$INSTALL_DIR/go.mod" ] && grep -Eq '^module[[:space:]]+seo-monitor([[:space:]]|$)' "$INSTALL_DIR/go.mod"; then
+      :
+    else
+      UNEXPECTED_ENTRY=$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 ! -name domains.json ! -name .env -print -quit)
+      if [ -n "$UNEXPECTED_ENTRY" ]; then
+        fail "$INSTALL_DIR contains an unexpected entry: $UNEXPECTED_ENTRY"
+      fi
+    fi
+
+    log "Migrating existing non-Git configuration or source directory"
+    STAGING_DIR=$(mktemp -d "${INSTALL_DIR}.new.XXXXXX")
+    git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$STAGING_DIR/repository"
+
+    if [ -f "$INSTALL_DIR/.env" ]; then
+      cp -p "$INSTALL_DIR/.env" "$STAGING_DIR/repository/.env"
+    fi
+    if [ -f "$INSTALL_DIR/domains.json" ]; then
+      cp -p "$INSTALL_DIR/domains.json" "$STAGING_DIR/repository/domains.json"
+    fi
+
+    LEGACY_BACKUP="${INSTALL_DIR}.backup.$(date '+%Y%m%d%H%M%S')"
+    mv "$INSTALL_DIR" "$LEGACY_BACKUP"
+    if ! mv "$STAGING_DIR/repository" "$INSTALL_DIR"; then
+      mv "$LEGACY_BACKUP" "$INSTALL_DIR"
+      fail "failed to activate cloned repository; the original directory was restored"
+    fi
+    rmdir "$STAGING_DIR" 2>/dev/null || true
+    log "Original source directory preserved at $LEGACY_BACKUP"
+  else
+    mkdir -p "$INSTALL_DIR"
+    git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$INSTALL_DIR"
   fi
-  mkdir -p "$INSTALL_DIR"
-  git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$INSTALL_DIR"
 fi
 
 restore_domains
@@ -178,5 +211,8 @@ log "Installation complete"
 printf 'Source:  %s\n' "$INSTALL_DIR"
 printf 'Domains: %s/domains.json\n' "$INSTALL_DIR"
 printf 'Config:  %s/.env\n' "$INSTALL_DIR"
+if [ -n "$LEGACY_BACKUP" ]; then
+  printf 'Backup:  %s\n' "$LEGACY_BACKUP"
+fi
 printf 'Service: systemctl status %s\n' "$SERVICE_NAME"
 printf 'Logs:    journalctl -u %s -f\n' "$SERVICE_NAME"

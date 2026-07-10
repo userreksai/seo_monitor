@@ -143,6 +143,8 @@ sudo env \
   sh /tmp/install-seo-monitor.sh
 ```
 
+如果 `/usr/local/seo_monitor` 只有 `domains.json`、`.env`，或者是以前手动上传且尚未包含 `.git` 的项目源码，脚本会把整个旧目录保存为 `/usr/local/seo_monitor.backup.YYYYMMDDHHMMSS`，克隆正式仓库，并自动迁移旧 `.env` 与 `domains.json`；不会直接覆盖或删除旧文件。目录出现不属于项目的未知文件时仍会安全停止。
+
 如果已经手动初始化数据库，可以增加 `SKIP_MONGO_INIT=1`。脚本必须以 root 运行，并要求服务器已安装 `git`、`go`、`systemctl`；未跳过数据库初始化时还要求 `mongosh`。首次安装会生成随机 API Token 并写入权限为 `600` 的 `/usr/local/seo_monitor/.env`，后续运行不会覆盖该文件。
 
 ### 1. 上传源码并编译
