@@ -15,6 +15,7 @@ import (
 
 	"seo-monitor/internal/collector"
 	"seo-monitor/internal/config"
+	"seo-monitor/internal/domainfile"
 	"seo-monitor/internal/httpapi"
 	"seo-monitor/internal/scraper"
 	"seo-monitor/internal/store"
@@ -58,6 +59,36 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	syncDomainsFile := func() error {
+		domains, loadErr := domainfile.Load(cfg.DomainsFile)
+		if errors.Is(loadErr, os.ErrNotExist) {
+			logger.Warn("domains file not found; continuing with database domains", "file", cfg.DomainsFile)
+			return nil
+		}
+		if loadErr != nil {
+			return loadErr
+		}
+
+		created := 0
+		existing := 0
+		for _, domain := range domains {
+			if _, createErr := st.CreateDomain(rootCtx, domain, nil); errors.Is(createErr, store.ErrConflict) {
+				existing++
+			} else if createErr != nil {
+				return createErr
+			} else {
+				created++
+			}
+		}
+		logger.Info("domains file synchronized", "file", cfg.DomainsFile, "total", len(domains), "created", created, "existing", existing)
+		return nil
+	}
+	if err := syncDomainsFile(); err != nil {
+		logger.Error("synchronize domains file", "file", cfg.DomainsFile, "error", err)
+		os.Exit(1)
+	}
+
 	if recovered, recoverErr := st.RecoverStaleJobs(rootCtx, cfg.StaleJobAfter); recoverErr != nil {
 		logger.Error("recover stale jobs", "error", recoverErr)
 	} else if recovered > 0 {
@@ -77,6 +108,12 @@ func main() {
 	workerService.Start(rootCtx)
 
 	queueToday := func(requestedBy string) {
+		if requestedBy == "scheduler" {
+			if syncErr := syncDomainsFile(); syncErr != nil {
+				logger.Error("synchronize domains file before scheduled collection", "file", cfg.DomainsFile, "error", syncErr)
+				return
+			}
+		}
 		date := collector.SnapshotDate(time.Now(), location)
 		count, queueErr := st.QueueAll(rootCtx, date, requestedBy)
 		if queueErr != nil {
