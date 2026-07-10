@@ -143,7 +143,7 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     printf 'MONGODB_DATABASE=seo_monitor\n'
     printf 'ENSURE_INDEXES=true\n'
     printf 'DOMAINS_FILE=domains.json\n'
-    printf 'HTTP_ADDR=127.0.0.1:8080\n'
+    printf 'HTTP_ADDR=127.0.0.1:10001\n'
     printf 'API_TOKEN=%s\n' "$APP_API_TOKEN"
     printf 'CORS_ALLOWED_ORIGINS=\n'
     printf 'SOURCE_BASE_URL=https://seo.chinaz.com\n'
@@ -194,7 +194,7 @@ if command -v curl >/dev/null 2>&1; then
   attempt=0
   healthy=0
   while [ "$attempt" -lt 20 ]; do
-    if curl -fsS --max-time 2 http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+    if curl -fsS --max-time 2 http://127.0.0.1:10001/healthz >/dev/null 2>&1; then
       healthy=1
       break
     fi

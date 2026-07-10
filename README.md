@@ -207,7 +207,7 @@ sudo -u seo-monitor sh build.sh
 sudo systemctl start seo-monitor
 ```
 
-Go 服务直接监听 `.env` 的 `HTTP_ADDR`（默认 `127.0.0.1:8080`）。如需公网访问，建议由 Nginx/Caddy 反向代理到它并启用 HTTPS；MongoDB 只允许本机或内网访问。
+Go 服务直接监听 `.env` 的 `HTTP_ADDR`（默认 `127.0.0.1:10001`）。如需公网访问，建议由 Nginx/Caddy 反向代理到它并启用 HTTPS；MongoDB 只允许本机或内网访问。
 
 Windows 服务器也可直接源码编译运行：
 
@@ -254,7 +254,7 @@ Content-Type: application/json
 
 ```powershell
 $headers = @{ Authorization = "Bearer 你的API_TOKEN" }
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/api/v1/domains `
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:10001/api/v1/domains `
   -Headers $headers -ContentType application/json `
   -Body '{"domain":"qiyeshangpu.com","display_name":"大众信息网"}'
 ```
