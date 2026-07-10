@@ -99,7 +99,7 @@ QUEUE_ON_START=true
 
 ### 域名文件
 
-服务默认读取当前工作目录的 `domains.json`。systemd 的工作目录为 `/usr/local/seo_monitor`，所以对应完整路径是 `/usr/local/seo_monitor/domains.json`。推荐使用标准 JSON 数组：
+服务默认读取当前工作目录的 `domains.json`。systemd 的工作目录为 `/usr/local/seo_monitor`，所以对应完整路径是 `/usr/local/seo_monitor/domains.json`。一键安装脚本会在文件不存在时从 `domains.example.json` 创建它，并在以后更新代码时保留服务器已有列表。推荐使用标准 JSON 数组：
 
 ```json
 [
@@ -124,6 +124,27 @@ DOMAINS_FILE=domains.json
 
 以下以 Ubuntu/Debian Linux 为例。服务器需安装 Go 1.23 或更高版本、`mongosh`，MongoDB 可以在本机或内网另一台服务器。
 
+### 一键安装或更新（推荐）
+
+下面的完整脚本会拉取 `main` 到 `/usr/local/seo_monitor`、保留已有 `domains.json` 和 `.env`、初始化 MongoDB、测试编译、安装 systemd 服务、启动并检查健康状态：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/userreksai/seo_monitor/main/install.sh \
+  -o /tmp/install-seo-monitor.sh
+sudo sh /tmp/install-seo-monitor.sh
+```
+
+MongoDB 开启认证时，分别传入用于建库的管理员连接串和应用运行连接串。用户名或密码中的特殊字符应先做 URL 编码：
+
+```bash
+sudo env \
+  MONGO_ADMIN_URI='mongodb://管理员:密码@127.0.0.1:27017/admin?authSource=admin' \
+  MONGODB_URI='mongodb://seo_monitor_app:密码@127.0.0.1:27017/seo_monitor?authSource=seo_monitor' \
+  sh /tmp/install-seo-monitor.sh
+```
+
+如果已经手动初始化数据库，可以增加 `SKIP_MONGO_INIT=1`。脚本必须以 root 运行，并要求服务器已安装 `git`、`go`、`systemctl`；未跳过数据库初始化时还要求 `mongosh`。首次安装会生成随机 API Token 并写入权限为 `600` 的 `/usr/local/seo_monitor/.env`，后续运行不会覆盖该文件。
+
 ### 1. 上传源码并编译
 
 ```bash
@@ -132,6 +153,7 @@ sudo mkdir -p /usr/local/seo_monitor
 sudo chown -R "$USER":seo-monitor /usr/local/seo_monitor
 cd /usr/local/seo_monitor
 # 将本项目全部源码上传到这里后执行：
+[ -f domains.json ] || cp domains.example.json domains.json
 sh build.sh
 ```
 
@@ -291,7 +313,8 @@ internal/collector/          Worker 与日期逻辑
 internal/httpapi/            域名 CRUD、采集、趋势 API
 scripts/mongo-init.js        新建 seo_monitor 库、字段校验、索引
 build.sh                     源码测试与编译（可从任意目录调用）
-domains.json                 每日采集域名列表
+install.sh                   拉取、初始化、编译并安装 systemd 服务
+domains.example.json         域名列表示例；安装时生成本地 domains.json
 scripts/build.sh             兼容入口，转发到根目录 build.sh
 deploy/seo-monitor.service   Linux systemd 服务配置
 ```
