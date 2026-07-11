@@ -1,9 +1,12 @@
 package scraper
 
 import (
+	"context"
 	"os"
 	"testing"
 	"time"
+
+	"seo-monitor/internal/model"
 )
 
 func TestParseSEOResult(t *testing.T) {
@@ -53,6 +56,68 @@ func TestParseSEOResult(t *testing.T) {
 func TestParseRejectsChallengePage(t *testing.T) {
 	if _, err := Parse([]byte("<html><body>verify</body></html>")); err == nil {
 		t.Fatal("expected missing result table error")
+	}
+}
+
+func TestMergeRankResponse(t *testing.T) {
+	body := []byte(`seoMonitorCallback({"StateCode":1,"Result":{"baiduPc":{"rank":2,"uv_min":142,"uv_max":226},"baiduMobile":{"rank":4,"uv_min":1744,"uv_max":2786},"sogouPc":{"rank":0,"uv_min":0,"uv_max":0},"bing":{"rank":0,"uv_min":0,"uv_max":0},"haosouPc":{"rank":0,"uv_min":0,"uv_max":0},"shenma":{"rank":0,"uv_min":0,"uv_max":0}}})`)
+	var metric model.Metric
+	if err := mergeRankResponse(body, &metric); err != nil {
+		t.Fatal(err)
+	}
+	assertInt64(t, "traffic min", metric.TrafficMin, 1886)
+	assertInt64(t, "traffic max", metric.TrafficMax, 3012)
+	if metric.TrafficText == nil || *metric.TrafficText != "1,886 ~ 3,012" {
+		t.Fatalf("traffic text = %v", metric.TrafficText)
+	}
+	assertInt16(t, "baidu pc", metric.BaiduPCWeight, 2)
+	assertInt16(t, "baidu mobile", metric.BaiduMobile, 4)
+	assertInt16(t, "sogou", metric.SogouWeight, 0)
+}
+
+func TestMergeAPPPCResponse(t *testing.T) {
+	body := []byte(`callback({"StateCode":1,"Result":{"WeekRank":"14586","Pr":"1","ResLink":"{\"link\":80}"}})`)
+	var metric model.Metric
+	if err := mergeAPPPCResponse(body, &metric); err != nil {
+		t.Fatal(err)
+	}
+	assertInt64(t, "APPPC rank", metric.APPPCPCrank, 14586)
+	assertInt16(t, "PR", metric.PRWeight, 1)
+	assertInt64(t, "backlinks", metric.BacklinkCount, 80)
+}
+
+func TestExtractSecretKey(t *testing.T) {
+	key, err := extractSecretKey([]byte(`<script>var enkey = 'public-key';</script>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key != "public-key" {
+		t.Fatalf("key = %q", key)
+	}
+}
+
+func TestLiveFetch(t *testing.T) {
+	domain := os.Getenv("CHINAZ_LIVE_TEST_DOMAIN")
+	if domain == "" {
+		t.Skip("set CHINAZ_LIVE_TEST_DOMAIN to run the upstream integration test")
+	}
+	source, err := NewChinaz(Config{
+		BaseURL:          "https://seo.chinaz.com",
+		DataBaseURL:      "https://othertool.chinaz.com",
+		UserAgent:        "Mozilla/5.0 seo-monitor integration test",
+		Timeout:          30 * time.Second,
+		Retries:          1,
+		MaxResponseBytes: 3 * 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metric, err := source.Fetch(context.Background(), domain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metric.BaiduPCWeight == nil || metric.BaiduMobile == nil || metric.TrafficText == nil {
+		t.Fatalf("incomplete live metric: %+v", metric)
 	}
 }
 

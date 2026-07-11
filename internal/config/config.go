@@ -17,6 +17,7 @@ type Config struct {
 	AllowedOrigins   []string
 	EnsureIndexes    bool
 	SourceBaseURL    string
+	SourceDataURL    string
 	UserAgent        string
 	ScrapeTimeout    time.Duration
 	ScrapeMinDelay   time.Duration
@@ -41,6 +42,7 @@ func Load() (Config, error) {
 		AllowedOrigins:   splitCSV(os.Getenv("CORS_ALLOWED_ORIGINS")),
 		EnsureIndexes:    envBool("ENSURE_INDEXES", true),
 		SourceBaseURL:    env("SOURCE_BASE_URL", "https://seo.chinaz.com"),
+		SourceDataURL:    env("SOURCE_DATA_URL", "https://othertool.chinaz.com"),
 		UserAgent:        env("SCRAPE_USER_AGENT", "seo-monitor/1.0 (daily metrics collector; contact your administrator)"),
 		ScrapeTimeout:    envDuration("SCRAPE_TIMEOUT", 25*time.Second),
 		ScrapeMinDelay:   envDuration("SCRAPE_MIN_DELAY", 3*time.Second),
