@@ -86,6 +86,17 @@ func TestMergeAPPPCResponse(t *testing.T) {
 	assertInt64(t, "backlinks", metric.BacklinkCount, 80)
 }
 
+func TestMergeCategoryResponse(t *testing.T) {
+	body := []byte(`callback({"StateCode":1,"Message":"成功","Result":"常用查询"})`)
+	var metric model.Metric
+	if err := mergeCategoryResponse(body, &metric); err != nil {
+		t.Fatal(err)
+	}
+	if metric.SiteCategory == nil || *metric.SiteCategory != "常用查询" {
+		t.Fatalf("site category = %v", metric.SiteCategory)
+	}
+}
+
 func TestExtractSecretKey(t *testing.T) {
 	key, err := extractSecretKey([]byte(`<script>var enkey = 'public-key';</script>`))
 	if err != nil {
@@ -118,6 +129,9 @@ func TestLiveFetch(t *testing.T) {
 	}
 	if metric.BaiduPCWeight == nil || metric.BaiduMobile == nil || metric.TrafficText == nil {
 		t.Fatalf("incomplete live metric: %+v", metric)
+	}
+	if domain == "xingzuo360.cn" && (metric.SiteCategory == nil || *metric.SiteCategory != "常用查询") {
+		t.Fatalf("live site category = %v", metric.SiteCategory)
 	}
 }
 
