@@ -124,9 +124,17 @@ func (c *Chinaz) fetchComplete(ctx context.Context, domain string) (model.Metric
 		return model.Metric{}, err
 	}
 
+	categoryBody, err := c.fetchData(ctx, "/GetTopRanked.ashx", "GetSiteCategory", domain, secretKey, pageURL)
+	if err != nil {
+		return model.Metric{}, fmt.Errorf("fetch site category: %w", err)
+	}
+	if err := mergeCategoryResponse(categoryBody, &metric); err != nil {
+		return model.Metric{}, err
+	}
+
 	metric.SourceURL = pageURL
 	hasher := sha256.New()
-	for _, raw := range [][]byte{pageBody, rankBody, apppcBody} {
+	for _, raw := range [][]byte{pageBody, rankBody, apppcBody, categoryBody} {
 		_, _ = hasher.Write(raw)
 		_, _ = hasher.Write([]byte{0})
 	}
@@ -312,6 +320,22 @@ func mergeAPPPCResponse(body []byte, metric *model.Metric) error {
 		if json.Unmarshal([]byte(response.Result.ResLink), &link) == nil {
 			metric.BacklinkCount = parseJSONInteger(link.Count)
 		}
+	}
+	return nil
+}
+
+type categoryResponse struct {
+	StateCode int    `json:"StateCode"`
+	Result    string `json:"Result"`
+}
+
+func mergeCategoryResponse(body []byte, metric *model.Metric) error {
+	var response categoryResponse
+	if err := decodeJSONP(body, &response); err != nil {
+		return fmt.Errorf("parse site category: %w", err)
+	}
+	if response.StateCode != 0 {
+		metric.SiteCategory = textPointer(response.Result)
 	}
 	return nil
 }
