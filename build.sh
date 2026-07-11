@@ -22,6 +22,6 @@ go test ./...
 
 echo "==> Building bin/seo-monitor"
 mkdir -p bin
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/seo-monitor ./cmd/server
+CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags="-s -w" -o bin/seo-monitor ./cmd/server
 
 echo "Build complete: $PROJECT_DIR/bin/seo-monitor"

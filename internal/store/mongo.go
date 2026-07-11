@@ -209,14 +209,14 @@ func (s *Store) ArchiveDomain(ctx context.Context, id primitive.ObjectID) error 
 	return nil
 }
 
-func (s *Store) QueueAll(ctx context.Context, snapshotDate time.Time, requestedBy string) (int, error) {
+func (s *Store) QueueAll(ctx context.Context, snapshotDate time.Time, requestedBy string, force bool) (int, error) {
 	domains, err := s.ListDomains(ctx, false)
 	if err != nil {
 		return 0, err
 	}
 	queued := 0
 	for _, domain := range domains {
-		_, added, queueErr := s.QueueDomain(ctx, domain.ID, snapshotDate, requestedBy, false)
+		_, added, queueErr := s.QueueDomain(ctx, domain.ID, snapshotDate, requestedBy, force)
 		if queueErr != nil {
 			return queued, queueErr
 		}

@@ -96,7 +96,7 @@ func main() {
 	}
 
 	source, err := scraper.NewChinaz(scraper.Config{
-		BaseURL: cfg.SourceBaseURL, UserAgent: cfg.UserAgent, Timeout: cfg.ScrapeTimeout,
+		BaseURL: cfg.SourceBaseURL, DataBaseURL: cfg.SourceDataURL, UserAgent: cfg.UserAgent, Timeout: cfg.ScrapeTimeout,
 		MinDelay: cfg.ScrapeMinDelay, MaxDelay: cfg.ScrapeMaxDelay, Retries: cfg.ScrapeRetries,
 		MaxResponseBytes: cfg.MaxResponseBytes,
 	})
@@ -115,7 +115,7 @@ func main() {
 			}
 		}
 		date := collector.SnapshotDate(time.Now(), location)
-		count, queueErr := st.QueueAll(rootCtx, date, requestedBy)
+		count, queueErr := st.QueueAll(rootCtx, date, requestedBy, false)
 		if queueErr != nil {
 			logger.Error("queue daily collection", "requested_by", requestedBy, "error", queueErr)
 			return

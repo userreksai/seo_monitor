@@ -147,6 +147,7 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     printf 'API_TOKEN=%s\n' "$APP_API_TOKEN"
     printf 'CORS_ALLOWED_ORIGINS=\n'
     printf 'SOURCE_BASE_URL=https://seo.chinaz.com\n'
+    printf 'SOURCE_DATA_URL=https://othertool.chinaz.com\n'
     printf 'SCRAPE_USER_AGENT="seo-monitor/1.0 (daily metrics collector; contact your administrator)"\n'
     printf 'SCRAPE_TIMEOUT=25s\n'
     printf 'SCRAPE_MIN_DELAY=3s\n'

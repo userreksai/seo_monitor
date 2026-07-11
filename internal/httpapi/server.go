@@ -239,8 +239,21 @@ func (s *Server) collectDomain(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) collectAll(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Force bool `json:"force"`
+	}
+	if r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	requestedBy := "manual"
+	if request.Force {
+		requestedBy = "manual-force"
+	}
 	date := collector.SnapshotDate(time.Now(), s.location)
-	count, err := s.store.QueueAll(r.Context(), date, "manual")
+	count, err := s.store.QueueAll(r.Context(), date, requestedBy, request.Force)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "批量排队失败")
 		return
