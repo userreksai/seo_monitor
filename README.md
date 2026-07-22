@@ -12,7 +12,7 @@
 
 ## 为什么继续使用 MongoDB
 
-你已经有 MongoDB，几百个域名每天一次的规模对 MongoDB 很小。按 500 个域名计算，一年约 18.25 万条快照，普通单机即可承载。趋势图查询使用 `{domain_id: 1, snapshot_date: -1}` 索引；同一域名同一天只保留一条数据，由 `{domain: 1, snapshot_date: 1}` 唯一索引强制保证。
+你已经有 MongoDB，几百个域名每天一次的规模对 MongoDB 很小。服务默认保留当天及往前 60 个自然日的数据。趋势图查询使用 `{domain_id: 1, snapshot_date: -1}` 索引；同一域名同一天只保留一条数据，由 `{domain: 1, snapshot_date: 1}` 唯一索引强制保证。
 
 新库包含三个集合：
 
@@ -97,6 +97,12 @@ COLLECT_CRON=15 2 * * *
 QUEUE_ON_START=true
 ```
 
+每日指标和轮询任务日志会在服务启动时、以及每天定时采集前清理。`snapshot_date < 当天-RETENTION_DAYS` 的记录会被删除，边界日保留；默认值 60 即保留当天及往前 60 个自然日：
+
+```dotenv
+RETENTION_DAYS=60
+```
+
 ### 域名文件
 
 服务默认读取当前工作目录的 `domains.json`。systemd 的工作目录为 `/usr/local/seo_monitor`，所以对应完整路径是 `/usr/local/seo_monitor/domains.json`。一键安装脚本会在文件不存在时从 `domains.example.json` 创建它，并在以后更新代码时保留服务器已有列表。推荐使用标准 JSON 数组：
@@ -126,7 +132,7 @@ DOMAINS_FILE=domains.json
 
 ### 一键安装或更新（推荐）
 
-下面的完整脚本会拉取 `main` 到 `/usr/local/seo_monitor`、保留已有 `domains.json` 和 `.env`、初始化 MongoDB、测试编译、安装 systemd 服务、启动并检查健康状态：
+下面的完整脚本会拉取 `main` 到 `/usr/local/seo_monitor`、保留已有 `domains.json` 和 `.env`（缺少时补入 `RETENTION_DAYS=60`）、初始化 MongoDB、测试编译、安装 systemd 服务、启动并检查健康状态：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/userreksai/seo_monitor/main/install.sh \

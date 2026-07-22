@@ -115,6 +115,10 @@ db.collection_jobs.createIndex(
   { domain_id: 1, snapshot_date: -1 },
   { name: "ix_jobs_domain_date" }
 );
+db.collection_jobs.createIndex(
+  { snapshot_date: -1 },
+  { name: "ix_jobs_date" }
+);
 // dedupe_key 只在 queued/running 状态存在，防止同一域名同一天重复排队。
 db.collection_jobs.createIndex(
   { dedupe_key: 1 },

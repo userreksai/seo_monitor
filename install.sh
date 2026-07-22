@@ -157,6 +157,7 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     printf 'WORKER_COUNT=1\n'
     printf 'JOB_POLL_INTERVAL=2s\n'
     printf 'STALE_JOB_AFTER=20m\n'
+    printf 'RETENTION_DAYS=60\n'
     printf 'SNAPSHOT_TIMEZONE=Asia/Shanghai\n'
     printf 'COLLECT_CRON="15 2 * * *"\n'
     printf 'QUEUE_ON_START=true\n'
@@ -165,21 +166,23 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
 else
   ENV_TEMP=$(mktemp "$INSTALL_DIR/.env.XXXXXX")
   awk '
-    BEGIN { updated = 0 }
+    BEGIN { http_updated = 0; retention_seen = 0 }
     /^HTTP_ADDR=/ {
-      if (!updated) {
+      if (!http_updated) {
         print "HTTP_ADDR=127.0.0.1:10001"
-        updated = 1
+        http_updated = 1
       }
       next
     }
+    /^RETENTION_DAYS=/ { retention_seen = 1 }
     { print }
     END {
-      if (!updated) print "HTTP_ADDR=127.0.0.1:10001"
+      if (!http_updated) print "HTTP_ADDR=127.0.0.1:10001"
+      if (!retention_seen) print "RETENTION_DAYS=60"
     }
   ' "$INSTALL_DIR/.env" >"$ENV_TEMP"
   mv "$ENV_TEMP" "$INSTALL_DIR/.env"
-  log "Keeping existing $INSTALL_DIR/.env and setting HTTP_ADDR to 127.0.0.1:10001"
+  log "Keeping existing $INSTALL_DIR/.env, setting HTTP_ADDR, and ensuring RETENTION_DAYS is configured"
 fi
 chmod 600 "$INSTALL_DIR/.env"
 

@@ -57,6 +57,12 @@ type Store struct {
 	jobs    *mongo.Collection
 }
 
+// CleanupResult reports how many records were removed from each retained collection.
+type CleanupResult struct {
+	MetricsDeleted int64
+	JobsDeleted    int64
+}
+
 func New(ctx context.Context, uri, database string) (*Store, error) {
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri).SetAppName("seo-monitor"))
 	if err != nil {
@@ -107,6 +113,7 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 	_, err = s.jobs.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "queued_at", Value: 1}}, Options: options.Index().SetName("ix_jobs_status_queue")},
 		{Keys: bson.D{{Key: "domain_id", Value: 1}, {Key: "snapshot_date", Value: -1}}, Options: options.Index().SetName("ix_jobs_domain_date")},
+		{Keys: bson.D{{Key: "snapshot_date", Value: -1}}, Options: options.Index().SetName("ix_jobs_date")},
 		{Keys: bson.D{{Key: "dedupe_key", Value: 1}}, Options: options.Index().SetName("uq_jobs_open").SetUnique(true).SetSparse(true)},
 	})
 	if err != nil {
@@ -328,6 +335,33 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, olderThan time.Duration) (
 		return 0, err
 	}
 	return result.ModifiedCount, nil
+}
+
+// CleanupBefore removes historical metrics and collection/polling records whose
+// snapshot date is strictly older than cutoff. The cutoff date itself is kept.
+func (s *Store) CleanupBefore(ctx context.Context, cutoff time.Time) (CleanupResult, error) {
+	var cleaned CleanupResult
+	if cutoff.IsZero() {
+		return cleaned, fmt.Errorf("cleanup cutoff must not be zero")
+	}
+	filter := snapshotDateBeforeFilter(cutoff)
+
+	jobsResult, err := s.jobs.DeleteMany(ctx, filter)
+	if err != nil {
+		return cleaned, fmt.Errorf("delete expired collection jobs: %w", err)
+	}
+	cleaned.JobsDeleted = jobsResult.DeletedCount
+
+	metricsResult, err := s.metrics.DeleteMany(ctx, filter)
+	if err != nil {
+		return cleaned, fmt.Errorf("delete expired daily metrics: %w", err)
+	}
+	cleaned.MetricsDeleted = metricsResult.DeletedCount
+	return cleaned, nil
+}
+
+func snapshotDateBeforeFilter(cutoff time.Time) bson.M {
+	return bson.M{"snapshot_date": bson.M{"$lt": cutoff}}
 }
 
 func (s *Store) Metrics(ctx context.Context, id primitive.ObjectID, from, to time.Time) ([]model.Metric, error) {

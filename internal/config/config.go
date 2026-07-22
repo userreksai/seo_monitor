@@ -27,6 +27,7 @@ type Config struct {
 	WorkerCount      int
 	JobPollInterval  time.Duration
 	StaleJobAfter    time.Duration
+	RetentionDays    int
 	CollectCron      string
 	SnapshotTimezone string
 	QueueOnStart     bool
@@ -52,6 +53,7 @@ func Load() (Config, error) {
 		WorkerCount:      envInt("WORKER_COUNT", 1),
 		JobPollInterval:  envDuration("JOB_POLL_INTERVAL", 2*time.Second),
 		StaleJobAfter:    envDuration("STALE_JOB_AFTER", 20*time.Minute),
+		RetentionDays:    envInt("RETENTION_DAYS", 60),
 		CollectCron:      env("COLLECT_CRON", "15 2 * * *"),
 		SnapshotTimezone: env("SNAPSHOT_TIMEZONE", "Asia/Shanghai"),
 		QueueOnStart:     envBool("QUEUE_ON_START", true),
@@ -65,6 +67,9 @@ func Load() (Config, error) {
 	}
 	if cfg.ScrapeMinDelay < 0 || cfg.ScrapeMaxDelay < cfg.ScrapeMinDelay {
 		return Config{}, fmt.Errorf("抓取延迟配置无效")
+	}
+	if cfg.RetentionDays < 1 || cfg.RetentionDays > 3650 {
+		return Config{}, fmt.Errorf("RETENTION_DAYS 必须在 1 到 3650 之间")
 	}
 	if _, err := time.LoadLocation(cfg.SnapshotTimezone); err != nil {
 		return Config{}, fmt.Errorf("SNAPSHOT_TIMEZONE 无效: %w", err)

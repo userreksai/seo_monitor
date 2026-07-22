@@ -60,6 +60,23 @@ func main() {
 		}
 	}
 
+	cleanupExpiredData := func(trigger string) {
+		cutoff := collector.RetentionCutoff(time.Now(), location, cfg.RetentionDays)
+		ctx, cancel := context.WithTimeout(rootCtx, 2*time.Minute)
+		cleaned, cleanupErr := st.CleanupBefore(ctx, cutoff)
+		cancel()
+		if cleanupErr != nil {
+			logger.Error("clean expired MongoDB records", "trigger", trigger, "retention_days", cfg.RetentionDays,
+				"cutoff", cutoff.Format("2006-01-02"), "metrics_deleted", cleaned.MetricsDeleted,
+				"jobs_deleted", cleaned.JobsDeleted, "error", cleanupErr)
+			return
+		}
+		logger.Info("expired MongoDB records cleaned", "trigger", trigger, "retention_days", cfg.RetentionDays,
+			"cutoff", cutoff.Format("2006-01-02"), "metrics_deleted", cleaned.MetricsDeleted,
+			"jobs_deleted", cleaned.JobsDeleted)
+	}
+	cleanupExpiredData("startup")
+
 	syncDomainsFile := func() error {
 		domains, loadErr := domainfile.Load(cfg.DomainsFile)
 		if errors.Is(loadErr, os.ErrNotExist) {
@@ -109,6 +126,7 @@ func main() {
 
 	queueToday := func(requestedBy string) {
 		if requestedBy == "scheduler" {
+			cleanupExpiredData("scheduler")
 			if syncErr := syncDomainsFile(); syncErr != nil {
 				logger.Error("synchronize domains file before scheduled collection", "file", cfg.DomainsFile, "error", syncErr)
 				return

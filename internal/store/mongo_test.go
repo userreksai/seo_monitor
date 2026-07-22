@@ -2,8 +2,11 @@ package store
 
 import (
 	"errors"
+	"reflect"
 	"testing"
+	"time"
 
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -37,5 +40,14 @@ func TestLatestSearchMatchValidation(t *testing.T) {
 	}
 	if _, err := latestSearchMatch("traffic_max", "abc"); !errors.Is(err, ErrInvalidSearch) {
 		t.Fatalf("expected invalid numeric error, got %v", err)
+	}
+}
+
+func TestSnapshotDateBeforeFilterKeepsCutoffDate(t *testing.T) {
+	cutoff := time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC)
+	got := snapshotDateBeforeFilter(cutoff)
+	want := bson.M{"snapshot_date": bson.M{"$lt": cutoff}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshotDateBeforeFilter = %#v, want %#v", got, want)
 	}
 }

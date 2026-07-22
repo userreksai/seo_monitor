@@ -90,3 +90,10 @@ func SnapshotDate(now time.Time, location *time.Location) time.Time {
 	year, month, day := now.In(location).Date()
 	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
 }
+
+// RetentionCutoff returns the oldest snapshot date that must be retained.
+// Cleanup deletes dates strictly before this value, so retentionDays=60 keeps
+// today plus the preceding 60 calendar dates.
+func RetentionCutoff(now time.Time, location *time.Location, retentionDays int) time.Time {
+	return SnapshotDate(now, location).AddDate(0, 0, -retentionDays)
+}
