@@ -408,13 +408,19 @@ func (s *Store) SaveCertificate(ctx context.Context, item model.Certificate) err
 }
 
 // ListCertificates returns active domains joined with their latest certificate
-// check. Domains without a check are retained in the result with a nil value.
-func (s *Store) ListCertificates(ctx context.Context, query string, page, limit int64) ([]model.LatestCertificate, int64, error) {
+// check. Summary counts cover the complete query result before the optional
+// status filter is applied, so dashboard cards remain independent of paging.
+func (s *Store) ListCertificates(ctx context.Context, query, status string, page, limit int64) ([]model.LatestCertificate, int64, model.CertificateSummary, error) {
 	if page < 1 {
 		page = 1
 	}
 	if limit < 1 || limit > 100 {
 		limit = 50
+	}
+	now := time.Now().UTC()
+	statusMatch, err := certificateStatusMatch(status, now)
+	if err != nil {
+		return nil, 0, model.CertificateSummary{}, err
 	}
 
 	match := bson.M{"active": true}
@@ -426,9 +432,34 @@ func (s *Store) ListCertificates(ctx context.Context, query string, page, limit 
 		}
 	}
 
+	itemsPipeline := mongo.Pipeline{}
+	totalPipeline := mongo.Pipeline{}
+	if len(statusMatch) > 0 {
+		itemsPipeline = append(itemsPipeline, bson.D{{Key: "$match", Value: statusMatch}})
+		totalPipeline = append(totalPipeline, bson.D{{Key: "$match", Value: statusMatch}})
+	}
+	itemsPipeline = append(itemsPipeline,
+		bson.D{{Key: "$sort", Value: bson.D{{Key: "domain", Value: 1}}}},
+		bson.D{{Key: "$skip", Value: (page - 1) * limit}},
+		bson.D{{Key: "$limit", Value: limit}},
+		bson.D{{Key: "$project", Value: bson.D{
+			{Key: "_id", Value: 0},
+			{Key: "domain_record", Value: bson.D{
+				{Key: "_id", Value: "$_id"},
+				{Key: "domain", Value: "$domain"},
+				{Key: "display_name", Value: "$display_name"},
+				{Key: "active", Value: "$active"},
+				{Key: "created_at", Value: "$created_at"},
+				{Key: "updated_at", Value: "$updated_at"},
+				{Key: "archived_at", Value: "$archived_at"},
+			}},
+			{Key: "certificate", Value: "$certificate"},
+		}}},
+	)
+	totalPipeline = append(totalPipeline, bson.D{{Key: "$count", Value: "value"}})
+
 	pipeline := mongo.Pipeline{
 		bson.D{{Key: "$match", Value: match}},
-		bson.D{{Key: "$sort", Value: bson.D{{Key: "domain", Value: 1}}}},
 		bson.D{{Key: "$lookup", Value: bson.M{
 			"from":         "domain_certificates",
 			"localField":   "_id",
@@ -436,35 +467,37 @@ func (s *Store) ListCertificates(ctx context.Context, query string, page, limit 
 			"as":           "certificate_docs",
 		}}},
 		bson.D{{Key: "$set", Value: bson.M{
-			"certificate": bson.M{"$arrayElemAt": bson.A{"$certificate_docs", 0}},
+			"certificate": bson.M{"$ifNull": bson.A{
+				bson.M{"$arrayElemAt": bson.A{"$certificate_docs", 0}}, nil,
+			}},
 		}}},
 		bson.D{{Key: "$facet", Value: bson.D{
-			{Key: "items", Value: mongo.Pipeline{
-				bson.D{{Key: "$skip", Value: (page - 1) * limit}},
-				bson.D{{Key: "$limit", Value: limit}},
-				bson.D{{Key: "$project", Value: bson.D{
-					{Key: "_id", Value: 0},
-					{Key: "domain_record", Value: bson.D{
-						{Key: "_id", Value: "$_id"},
-						{Key: "domain", Value: "$domain"},
-						{Key: "display_name", Value: "$display_name"},
-						{Key: "active", Value: "$active"},
-						{Key: "created_at", Value: "$created_at"},
-						{Key: "updated_at", Value: "$updated_at"},
-						{Key: "archived_at", Value: "$archived_at"},
-					}},
-					{Key: "certificate", Value: "$certificate"},
+			{Key: "items", Value: itemsPipeline},
+			{Key: "total", Value: totalPipeline},
+			{Key: "summary", Value: mongo.Pipeline{
+				bson.D{{Key: "$group", Value: bson.M{
+					"_id":   nil,
+					"total": bson.M{"$sum": 1},
+					"checked": bson.M{"$sum": bson.M{"$cond": bson.A{
+						bson.M{"$ne": bson.A{"$certificate", nil}}, 1, 0,
+					}}},
+					"expiring_soon": bson.M{"$sum": bson.M{"$cond": bson.A{
+						bson.M{"$and": bson.A{
+							bson.M{"$gte": bson.A{"$certificate.expires_at", now}},
+							bson.M{"$lte": bson.A{"$certificate.expires_at", now.Add(30 * 24 * time.Hour)}},
+						}}, 1, 0,
+					}}},
+					"expired": bson.M{"$sum": bson.M{"$cond": bson.A{
+						bson.M{"$lt": bson.A{"$certificate.expires_at", now}}, 1, 0,
+					}}},
 				}}},
-			}},
-			{Key: "total", Value: mongo.Pipeline{
-				bson.D{{Key: "$count", Value: "value"}},
 			}},
 		}}},
 	}
 
 	cursor, err := s.domains.Aggregate(ctx, pipeline)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, model.CertificateSummary{}, err
 	}
 	defer cursor.Close(ctx)
 	var result []struct {
@@ -472,18 +505,41 @@ func (s *Store) ListCertificates(ctx context.Context, query string, page, limit 
 		Total []struct {
 			Value int64 `bson:"value"`
 		} `bson:"total"`
+		Summary []model.CertificateSummary `bson:"summary"`
 	}
 	if err := cursor.All(ctx, &result); err != nil {
-		return nil, 0, err
+		return nil, 0, model.CertificateSummary{}, err
 	}
 	if len(result) == 0 {
-		return []model.LatestCertificate{}, 0, nil
+		return []model.LatestCertificate{}, 0, model.CertificateSummary{}, nil
 	}
 	total := int64(0)
 	if len(result[0].Total) > 0 {
 		total = result[0].Total[0].Value
 	}
-	return result[0].Items, total, nil
+	summary := model.CertificateSummary{}
+	if len(result[0].Summary) > 0 {
+		summary = result[0].Summary[0]
+	}
+	return result[0].Items, total, summary, nil
+}
+
+func certificateStatusMatch(status string, now time.Time) (bson.D, error) {
+	switch strings.TrimSpace(status) {
+	case "":
+		return nil, nil
+	case "checked":
+		return bson.D{{Key: "certificate", Value: bson.M{"$ne": nil}}}, nil
+	case "expiring":
+		return bson.D{{Key: "certificate.expires_at", Value: bson.M{
+			"$gte": now,
+			"$lte": now.Add(30 * 24 * time.Hour),
+		}}}, nil
+	case "expired":
+		return bson.D{{Key: "certificate.expires_at", Value: bson.M{"$lt": now}}}, nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported certificate status %q", ErrInvalidSearch, status)
+	}
 }
 
 func (s *Store) ListJobs(ctx context.Context, status string, limit int64) ([]model.CollectionJob, error) {
