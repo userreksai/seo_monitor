@@ -21,6 +21,7 @@
 | `domains` | 域名 CRUD、启用/归档状态 |
 | `domain_daily_metrics` | 每日指标快照，趋势图数据源 |
 | `collection_jobs` | 持久任务队列、失败原因和执行状态 |
+| `domain_certificates` | 每个启用域名最近一次 TLS 证书检测结果 |
 
 API 删除域名时执行软删除（`active=false`），不会删除历史趋势。应用使用 MongoDB 原子抢占任务；重启后卡在 `running` 的旧任务会重新排队。
 
@@ -53,8 +54,14 @@ use seo_monitor
 show collections
 db.domains.getIndexes()
 db.domain_daily_metrics.getIndexes()
+db.domain_certificates.getIndexes()
 db.getCollectionInfos().forEach(x => printjson({name: x.name, validator: x.options.validator}))
 ```
+
+即使不手动运行脚本，默认的 `ENSURE_INDEXES=true` 也会在服务启动时自动创建
+`domain_certificates` 集合和索引；手动脚本额外配置 JSON Schema Validator。服务启动后会在后台检测
+所有启用域名的 443 端口，并按 `CERTIFICATE_CRON` 定时更新。可通过
+`CERTIFICATE_WORKERS` 和 `CERTIFICATE_TIMEOUT` 控制并发数及单域名超时时间。
 
 如果 MongoDB 已启用权限控制，建议给应用创建只操作新库的账号：
 
@@ -319,6 +326,7 @@ cmd/server/                  程序入口、定时器、优雅退出
 internal/scraper/            站长工具 HTML 采集与解析
 internal/store/              MongoDB、唯一索引、持久任务队列
 internal/collector/          Worker 与日期逻辑
+internal/certificate/        TLS 证书读取与并发刷新
 internal/httpapi/            域名 CRUD、采集、趋势 API
 scripts/mongo-init.js        新建 seo_monitor 库、字段校验、索引
 build.sh                     源码测试与编译（可从任意目录调用）

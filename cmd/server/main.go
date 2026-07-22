@@ -13,6 +13,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"seo-monitor/internal/certificate"
 	"seo-monitor/internal/collector"
 	"seo-monitor/internal/config"
 	"seo-monitor/internal/domainfile"
@@ -123,6 +124,9 @@ func main() {
 	}
 	workerService := collector.New(st, source, cfg.WorkerCount, cfg.JobPollInterval, logger)
 	workerService.Start(rootCtx)
+	certificateService := certificate.NewService(rootCtx, st,
+		certificate.NewTLSChecker(cfg.CertificateTimeout), cfg.CertificateWorkers, logger)
+	certificateService.RefreshAsync()
 
 	queueToday := func(requestedBy string) {
 		if requestedBy == "scheduler" {
@@ -149,12 +153,16 @@ func main() {
 		logger.Error("invalid COLLECT_CRON", "value", cfg.CollectCron, "error", err)
 		os.Exit(1)
 	}
+	if _, err := scheduler.AddFunc(cfg.CertificateCron, func() { certificateService.RefreshAsync() }); err != nil {
+		logger.Error("invalid CERTIFICATE_CRON", "value", cfg.CertificateCron, "error", err)
+		os.Exit(1)
+	}
 	scheduler.Start()
 	defer scheduler.Stop()
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.New(st, location, cfg.APIToken, cfg.AllowedOrigins, logger),
+		Handler:           httpapi.New(st, certificateService, location, cfg.APIToken, cfg.AllowedOrigins, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
