@@ -83,6 +83,13 @@ type LatestCertificate struct {
 	Certificate *Certificate `bson:"certificate,omitempty" json:"certificate,omitempty"`
 }
 
+type CertificateSummary struct {
+	Total        int64 `bson:"total" json:"total"`
+	Checked      int64 `bson:"checked" json:"checked"`
+	ExpiringSoon int64 `bson:"expiring_soon" json:"expiring_soon"`
+	Expired      int64 `bson:"expired" json:"expired"`
+}
+
 type CollectionJob struct {
 	ID           primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	DomainID     primitive.ObjectID `bson:"domain_id" json:"domain_id"`

@@ -371,6 +371,7 @@ func (s *Server) searchLatest(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	page := int64(1)
 	limit := int64(50)
 	if raw := r.URL.Query().Get("page"); raw != "" {
@@ -390,14 +391,19 @@ func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
 		limit = parsed
 	}
 
-	items, total, err := s.store.ListCertificates(r.Context(), query, page, limit)
+	items, total, summary, err := s.store.ListCertificates(r.Context(), query, status, page, limit)
+	if errors.Is(err, store.ErrInvalidSearch) {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询证书信息失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": items, "count": len(items), "total": total,
-		"page": page, "limit": limit, "q": query,
+		"page": page, "limit": limit, "q": query, "status": status,
+		"summary": summary,
 	})
 }
 
