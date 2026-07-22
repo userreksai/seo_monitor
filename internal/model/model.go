@@ -88,6 +88,7 @@ type CertificateSummary struct {
 	Checked      int64 `bson:"checked" json:"checked"`
 	ExpiringSoon int64 `bson:"expiring_soon" json:"expiring_soon"`
 	Expired      int64 `bson:"expired" json:"expired"`
+	Failed       int64 `bson:"failed" json:"failed"`
 }
 
 type CollectionJob struct {

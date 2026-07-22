@@ -482,13 +482,15 @@ func (s *Store) ListCertificates(ctx context.Context, query, status string, page
 						bson.M{"$ne": bson.A{"$certificate", nil}}, 1, 0,
 					}}},
 					"expiring_soon": bson.M{"$sum": bson.M{"$cond": bson.A{
-						bson.M{"$and": bson.A{
-							bson.M{"$gte": bson.A{"$certificate.expires_at", now}},
-							bson.M{"$lte": bson.A{"$certificate.expires_at", now.Add(30 * 24 * time.Hour)}},
-						}}, 1, 0,
+						certificateExpiryCondition(now, now.Add(30*24*time.Hour)), 1, 0,
 					}}},
 					"expired": bson.M{"$sum": bson.M{"$cond": bson.A{
-						bson.M{"$lt": bson.A{"$certificate.expires_at", now}}, 1, 0,
+						certificateExpiredCondition(now), 1, 0,
+					}}},
+					"failed": bson.M{"$sum": bson.M{"$cond": bson.A{
+						bson.M{"$ne": bson.A{
+							bson.M{"$ifNull": bson.A{"$certificate.error_message", ""}}, "",
+						}}, 1, 0,
 					}}},
 				}}},
 			}},
@@ -532,14 +534,36 @@ func certificateStatusMatch(status string, now time.Time) (bson.D, error) {
 		return bson.D{{Key: "certificate", Value: bson.M{"$ne": nil}}}, nil
 	case "expiring":
 		return bson.D{{Key: "certificate.expires_at", Value: bson.M{
-			"$gte": now,
-			"$lte": now.Add(30 * 24 * time.Hour),
+			"$type": "date",
+			"$gte":  now,
+			"$lte":  now.Add(30 * 24 * time.Hour),
 		}}}, nil
 	case "expired":
-		return bson.D{{Key: "certificate.expires_at", Value: bson.M{"$lt": now}}}, nil
+		return bson.D{{Key: "certificate.expires_at", Value: bson.M{"$type": "date", "$lt": now}}}, nil
+	case "failed":
+		return bson.D{{Key: "certificate.error_message", Value: bson.M{
+			"$exists": true,
+			"$type":   "string",
+			"$ne":     "",
+		}}}, nil
 	default:
 		return nil, fmt.Errorf("%w: unsupported certificate status %q", ErrInvalidSearch, status)
 	}
+}
+
+func certificateExpiryCondition(now, cutoff time.Time) bson.M {
+	return bson.M{"$and": bson.A{
+		bson.M{"$eq": bson.A{bson.M{"$type": "$certificate.expires_at"}, "date"}},
+		bson.M{"$gte": bson.A{"$certificate.expires_at", now}},
+		bson.M{"$lte": bson.A{"$certificate.expires_at", cutoff}},
+	}}
+}
+
+func certificateExpiredCondition(now time.Time) bson.M {
+	return bson.M{"$and": bson.A{
+		bson.M{"$eq": bson.A{bson.M{"$type": "$certificate.expires_at"}, "date"}},
+		bson.M{"$lt": bson.A{"$certificate.expires_at", now}},
+	}}
 }
 
 func (s *Store) ListJobs(ctx context.Context, status string, limit int64) ([]model.CollectionJob, error) {
