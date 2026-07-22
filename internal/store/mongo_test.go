@@ -61,9 +61,12 @@ func TestCertificateStatusMatch(t *testing.T) {
 		{"", nil},
 		{"checked", bson.D{{Key: "certificate", Value: bson.M{"$ne": nil}}}},
 		{"expiring", bson.D{{Key: "certificate.expires_at", Value: bson.M{
-			"$gte": now, "$lte": now.Add(30 * 24 * time.Hour),
+			"$type": "date", "$gte": now, "$lte": now.Add(30 * 24 * time.Hour),
 		}}}},
-		{"expired", bson.D{{Key: "certificate.expires_at", Value: bson.M{"$lt": now}}}},
+		{"expired", bson.D{{Key: "certificate.expires_at", Value: bson.M{"$type": "date", "$lt": now}}}},
+		{"failed", bson.D{{Key: "certificate.error_message", Value: bson.M{
+			"$exists": true, "$type": "string", "$ne": "",
+		}}}},
 	}
 	for _, test := range tests {
 		got, err := certificateStatusMatch(test.status, now)
@@ -76,5 +79,16 @@ func TestCertificateStatusMatch(t *testing.T) {
 	}
 	if _, err := certificateStatusMatch("unknown", now); !errors.Is(err, ErrInvalidSearch) {
 		t.Fatalf("expected invalid status error, got %v", err)
+	}
+}
+
+func TestCertificateExpiredConditionRequiresDate(t *testing.T) {
+	now := time.Date(2026, 7, 22, 3, 0, 0, 0, time.UTC)
+	want := bson.M{"$and": bson.A{
+		bson.M{"$eq": bson.A{bson.M{"$type": "$certificate.expires_at"}, "date"}},
+		bson.M{"$lt": bson.A{"$certificate.expires_at", now}},
+	}}
+	if got := certificateExpiredCondition(now); !reflect.DeepEqual(got, want) {
+		t.Fatalf("certificateExpiredCondition = %#v, want %#v", got, want)
 	}
 }
