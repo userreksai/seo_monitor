@@ -63,6 +63,18 @@ db.getCollectionInfos().forEach(x => printjson({name: x.name, validator: x.optio
 所有启用域名的 443 端口，并按 `CERTIFICATE_CRON` 定时更新。可通过
 `CERTIFICATE_WORKERS` 和 `CERTIFICATE_TIMEOUT` 控制并发数及单域名超时时间。
 
+主控节点无法解析或连接某些域名时，可以配置一个或多个
+[`SituationAwareness-agent`](https://github.com/userreksai/SituationAwareness-agent) 作为证书检测回退节点：
+
+```dotenv
+CERTIFICATE_AGENT_URLS=http://10.0.1.10:8002,http://10.0.2.10:8002
+CERTIFICATE_AGENT_TOKEN=与各Agent的AGENT_SHARED_TOKEN一致
+CERTIFICATE_AGENT_TIMEOUT=15s
+CERTIFICATE_AGENT_MAX_CONCURRENT=4
+```
+
+主控始终先执行本地检测；本地失败后才会从不同 Agent 开始轮询，任一 Agent 成功即把证书、实际连接地址和 Agent 名称写入 `domain_certificates`。每个 Agent 的并发由 `CERTIFICATE_AGENT_MAX_CONCURRENT` 单独限制，避免批量检测时触发节点的 429 保护。所有节点失败时，错误信息会同时保留主控及各 Agent 的失败原因。未配置 `CERTIFICATE_AGENT_URLS` 时行为与以前完全一致。Agent 的 `AGENT_MAX_TIMEOUT` 必须不小于 `CERTIFICATE_AGENT_TIMEOUT`，`AGENT_MAX_CONCURRENT` 应不小于主控的单 Agent 并发值，并建议通过防火墙只允许主控访问 Agent 的 8002 端口。
+
 如果 MongoDB 已启用权限控制，建议给应用创建只操作新库的账号：
 
 ```javascript

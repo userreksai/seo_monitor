@@ -24,6 +24,7 @@ func NewTLSChecker(timeout time.Duration) *TLSChecker {
 
 func (c *TLSChecker) Check(ctx context.Context, domain string) (model.Certificate, error) {
 	checkedAt := time.Now().UTC()
+	result := model.Certificate{Domain: domain, CheckedAt: checkedAt, CheckSource: "master"}
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: c.timeout},
 		Config: &tls.Config{
@@ -35,17 +36,18 @@ func (c *TLSChecker) Check(ctx context.Context, domain string) (model.Certificat
 	}
 	connection, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(domain, "443"))
 	if err != nil {
-		return model.Certificate{Domain: domain, CheckedAt: checkedAt}, fmt.Errorf("TLS connection failed: %w", err)
+		return result, fmt.Errorf("TLS connection failed: %w", err)
 	}
 	defer connection.Close()
+	result.ResolvedAddr = connection.RemoteAddr().String()
 
 	tlsConnection, ok := connection.(*tls.Conn)
 	if !ok {
-		return model.Certificate{Domain: domain, CheckedAt: checkedAt}, fmt.Errorf("unexpected TLS connection type")
+		return result, fmt.Errorf("unexpected TLS connection type")
 	}
 	state := tlsConnection.ConnectionState()
 	if len(state.PeerCertificates) == 0 {
-		return model.Certificate{Domain: domain, CheckedAt: checkedAt}, fmt.Errorf("server returned no certificate")
+		return result, fmt.Errorf("server returned no certificate")
 	}
 
 	leaf := state.PeerCertificates[0]
@@ -59,15 +61,12 @@ func (c *TLSChecker) Check(ctx context.Context, domain string) (model.Certificat
 	if subject == "" {
 		subject = leaf.Subject.String()
 	}
-	return model.Certificate{
-		Domain:        domain,
-		Issuer:        issuer,
-		Subject:       subject,
-		SerialNumber:  leaf.SerialNumber.Text(16),
-		DNSNames:      append([]string(nil), leaf.DNSNames...),
-		ValidFrom:     &validFrom,
-		ExpiresAt:     &expiresAt,
-		CheckedAt:     checkedAt,
-		HostnameValid: leaf.VerifyHostname(domain) == nil,
-	}, nil
+	result.Issuer = issuer
+	result.Subject = subject
+	result.SerialNumber = leaf.SerialNumber.Text(16)
+	result.DNSNames = append([]string(nil), leaf.DNSNames...)
+	result.ValidFrom = &validFrom
+	result.ExpiresAt = &expiresAt
+	result.HostnameValid = leaf.VerifyHostname(domain) == nil
+	return result, nil
 }

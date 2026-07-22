@@ -124,8 +124,23 @@ func main() {
 	}
 	workerService := collector.New(st, source, cfg.WorkerCount, cfg.JobPollInterval, logger)
 	workerService.Start(rootCtx)
+	certificateChecker, err := certificate.NewAgentFallbackChecker(
+		certificate.NewTLSChecker(cfg.CertificateTimeout), cfg.CertificateAgentURLs,
+		cfg.CertificateAgentToken, cfg.CertificateAgentTimeout, cfg.CertificateAgentConcurrency, logger,
+	)
+	if err != nil {
+		logger.Error("create certificate checker", "error", err)
+		os.Exit(1)
+	}
+	if len(cfg.CertificateAgentURLs) > 0 {
+		logger.Info("certificate agent fallback enabled", "agents", len(cfg.CertificateAgentURLs),
+			"timeout", cfg.CertificateAgentTimeout, "max_concurrent_per_agent", cfg.CertificateAgentConcurrency)
+		if cfg.CertificateAgentToken == "" {
+			logger.Warn("certificate Agent token is empty; configure CERTIFICATE_AGENT_TOKEN in production")
+		}
+	}
 	certificateService := certificate.NewService(rootCtx, st,
-		certificate.NewTLSChecker(cfg.CertificateTimeout), cfg.CertificateWorkers, logger)
+		certificateChecker, cfg.CertificateWorkers, logger)
 	certificateService.RefreshAsync()
 
 	queueToday := func(requestedBy string) {

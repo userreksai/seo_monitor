@@ -161,12 +161,26 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     printf 'SNAPSHOT_TIMEZONE=Asia/Shanghai\n'
     printf 'COLLECT_CRON="15 2 * * *"\n'
     printf 'QUEUE_ON_START=true\n'
+    printf 'CERTIFICATE_WORKERS=10\n'
+    printf 'CERTIFICATE_TIMEOUT=8s\n'
+    printf 'CERTIFICATE_CRON="45 3 * * *"\n'
+    printf 'CERTIFICATE_AGENT_URLS=\n'
+    printf 'CERTIFICATE_AGENT_TOKEN=\n'
+    printf 'CERTIFICATE_AGENT_TIMEOUT=15s\n'
+    printf 'CERTIFICATE_AGENT_MAX_CONCURRENT=4\n'
   } >"$INSTALL_DIR/.env"
   log "Created $INSTALL_DIR/.env with a generated API token"
 else
   ENV_TEMP=$(mktemp "$INSTALL_DIR/.env.XXXXXX")
   awk '
-    BEGIN { http_updated = 0; retention_seen = 0 }
+    BEGIN {
+      http_updated = 0
+      retention_seen = 0
+      certificate_agent_urls_seen = 0
+      certificate_agent_token_seen = 0
+      certificate_agent_timeout_seen = 0
+      certificate_agent_concurrency_seen = 0
+    }
     /^HTTP_ADDR=/ {
       if (!http_updated) {
         print "HTTP_ADDR=127.0.0.1:10001"
@@ -175,14 +189,22 @@ else
       next
     }
     /^RETENTION_DAYS=/ { retention_seen = 1 }
+    /^CERTIFICATE_AGENT_URLS=/ { certificate_agent_urls_seen = 1 }
+    /^CERTIFICATE_AGENT_TOKEN=/ { certificate_agent_token_seen = 1 }
+    /^CERTIFICATE_AGENT_TIMEOUT=/ { certificate_agent_timeout_seen = 1 }
+    /^CERTIFICATE_AGENT_MAX_CONCURRENT=/ { certificate_agent_concurrency_seen = 1 }
     { print }
     END {
       if (!http_updated) print "HTTP_ADDR=127.0.0.1:10001"
       if (!retention_seen) print "RETENTION_DAYS=60"
+      if (!certificate_agent_urls_seen) print "CERTIFICATE_AGENT_URLS="
+      if (!certificate_agent_token_seen) print "CERTIFICATE_AGENT_TOKEN="
+      if (!certificate_agent_timeout_seen) print "CERTIFICATE_AGENT_TIMEOUT=15s"
+      if (!certificate_agent_concurrency_seen) print "CERTIFICATE_AGENT_MAX_CONCURRENT=4"
     }
   ' "$INSTALL_DIR/.env" >"$ENV_TEMP"
   mv "$ENV_TEMP" "$INSTALL_DIR/.env"
-  log "Keeping existing $INSTALL_DIR/.env, setting HTTP_ADDR, and ensuring RETENTION_DAYS is configured"
+  log "Keeping existing $INSTALL_DIR/.env and ensuring required defaults are configured"
 fi
 chmod 600 "$INSTALL_DIR/.env"
 

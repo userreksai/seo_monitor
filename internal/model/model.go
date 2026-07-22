@@ -75,6 +75,8 @@ type Certificate struct {
 	ExpiresAt     *time.Time         `bson:"expires_at,omitempty" json:"expires_at,omitempty"`
 	CheckedAt     time.Time          `bson:"checked_at" json:"checked_at"`
 	HostnameValid bool               `bson:"hostname_valid" json:"hostname_valid"`
+	CheckSource   string             `bson:"check_source,omitempty" json:"check_source,omitempty"`
+	ResolvedAddr  string             `bson:"resolved_address,omitempty" json:"resolved_address,omitempty"`
 	ErrorMessage  *string            `bson:"error_message,omitempty" json:"error_message,omitempty"`
 }
 
