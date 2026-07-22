@@ -23,15 +23,20 @@ import (
 
 type Server struct {
 	store          *store.Store
+	certificates   CertificateRefresher
 	location       *time.Location
 	apiToken       string
 	allowedOrigins map[string]struct{}
 	logger         *slog.Logger
 }
 
-func New(st *store.Store, location *time.Location, apiToken string, origins []string, logger *slog.Logger) http.Handler {
+type CertificateRefresher interface {
+	RefreshAsync() bool
+}
+
+func New(st *store.Store, certificates CertificateRefresher, location *time.Location, apiToken string, origins []string, logger *slog.Logger) http.Handler {
 	server := &Server{
-		store: st, location: location, apiToken: apiToken,
+		store: st, certificates: certificates, location: location, apiToken: apiToken,
 		allowedOrigins: make(map[string]struct{}, len(origins)), logger: logger,
 	}
 	for _, origin := range origins {
@@ -44,6 +49,8 @@ func New(st *store.Store, location *time.Location, apiToken string, origins []st
 	mux.HandleFunc("POST /api/v1/domains", server.createDomain)
 	mux.HandleFunc("POST /api/v1/domains/bulk", server.bulkDomains)
 	mux.HandleFunc("GET /api/v1/search", server.searchLatest)
+	mux.HandleFunc("GET /api/v1/certificates", server.listCertificates)
+	mux.HandleFunc("POST /api/v1/certificates/refresh", server.refreshCertificates)
 	mux.HandleFunc("GET /api/v1/domains/{id}", server.getDomain)
 	mux.HandleFunc("PATCH /api/v1/domains/{id}", server.updateDomain)
 	mux.HandleFunc("DELETE /api/v1/domains/{id}", server.deleteDomain)
@@ -360,6 +367,50 @@ func (s *Server) searchLatest(w http.ResponseWriter, r *http.Request) {
 		"items": items, "count": len(items), "total": total,
 		"page": page, "limit": limit, "field": field, "q": query,
 	})
+}
+
+func (s *Server) listCertificates(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	page := int64(1)
+	limit := int64(50)
+	if raw := r.URL.Query().Get("page"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 1 {
+			writeError(w, http.StatusBadRequest, "page must be a positive integer")
+			return
+		}
+		page = parsed
+	}
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
+		limit = parsed
+	}
+
+	items, total, err := s.store.ListCertificates(r.Context(), query, page, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "查询证书信息失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items, "count": len(items), "total": total,
+		"page": page, "limit": limit, "q": query,
+	})
+}
+
+func (s *Server) refreshCertificates(w http.ResponseWriter, _ *http.Request) {
+	if s.certificates == nil {
+		writeError(w, http.StatusServiceUnavailable, "证书检测服务未启用")
+		return
+	}
+	if !s.certificates.RefreshAsync() {
+		writeJSON(w, http.StatusOK, map[string]any{"started": false, "message": "证书检测任务正在执行"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "message": "证书检测任务已启动"})
 }
 
 func objectID(w http.ResponseWriter, r *http.Request) (primitive.ObjectID, bool) {

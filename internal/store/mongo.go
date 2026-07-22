@@ -50,11 +50,12 @@ var latestSearchFields = map[string]latestSearchField{
 }
 
 type Store struct {
-	client  *mongo.Client
-	db      *mongo.Database
-	domains *mongo.Collection
-	metrics *mongo.Collection
-	jobs    *mongo.Collection
+	client       *mongo.Client
+	db           *mongo.Database
+	domains      *mongo.Collection
+	metrics      *mongo.Collection
+	jobs         *mongo.Collection
+	certificates *mongo.Collection
 }
 
 // CleanupResult reports how many records were removed from each retained collection.
@@ -74,11 +75,12 @@ func New(ctx context.Context, uri, database string) (*Store, error) {
 	}
 	db := client.Database(database)
 	return &Store{
-		client:  client,
-		db:      db,
-		domains: db.Collection("domains"),
-		metrics: db.Collection("domain_daily_metrics"),
-		jobs:    db.Collection("collection_jobs"),
+		client:       client,
+		db:           db,
+		domains:      db.Collection("domains"),
+		metrics:      db.Collection("domain_daily_metrics"),
+		jobs:         db.Collection("collection_jobs"),
+		certificates: db.Collection("domain_certificates"),
 	}, nil
 }
 
@@ -118,6 +120,15 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 	})
 	if err != nil {
 		return fmt.Errorf("create job indexes: %w", err)
+	}
+
+	_, err = s.certificates.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "domain_id", Value: 1}}, Options: options.Index().SetName("uq_certificates_domain_id").SetUnique(true)},
+		{Keys: bson.D{{Key: "expires_at", Value: 1}}, Options: options.Index().SetName("ix_certificates_expires")},
+		{Keys: bson.D{{Key: "checked_at", Value: -1}}, Options: options.Index().SetName("ix_certificates_checked")},
+	})
+	if err != nil {
+		return fmt.Errorf("create certificate indexes: %w", err)
 	}
 	return nil
 }
@@ -385,6 +396,94 @@ func (s *Store) LatestMetric(ctx context.Context, id primitive.ObjectID) (*model
 		return nil, nil
 	}
 	return &metric, err
+}
+
+// SaveCertificate replaces the latest certificate state for a domain. Keeping
+// one document per domain makes expiry dashboards and alert scans inexpensive.
+func (s *Store) SaveCertificate(ctx context.Context, item model.Certificate) error {
+	item.ID = primitive.NilObjectID
+	_, err := s.certificates.ReplaceOne(ctx, bson.M{"domain_id": item.DomainID}, item,
+		options.Replace().SetUpsert(true))
+	return err
+}
+
+// ListCertificates returns active domains joined with their latest certificate
+// check. Domains without a check are retained in the result with a nil value.
+func (s *Store) ListCertificates(ctx context.Context, query string, page, limit int64) ([]model.LatestCertificate, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+
+	match := bson.M{"active": true}
+	if query = strings.TrimSpace(query); query != "" {
+		pattern := primitive.Regex{Pattern: regexp.QuoteMeta(query), Options: "i"}
+		match["$or"] = bson.A{
+			bson.M{"domain": pattern},
+			bson.M{"display_name": pattern},
+		}
+	}
+
+	pipeline := mongo.Pipeline{
+		bson.D{{Key: "$match", Value: match}},
+		bson.D{{Key: "$sort", Value: bson.D{{Key: "domain", Value: 1}}}},
+		bson.D{{Key: "$lookup", Value: bson.M{
+			"from":         "domain_certificates",
+			"localField":   "_id",
+			"foreignField": "domain_id",
+			"as":           "certificate_docs",
+		}}},
+		bson.D{{Key: "$set", Value: bson.M{
+			"certificate": bson.M{"$arrayElemAt": bson.A{"$certificate_docs", 0}},
+		}}},
+		bson.D{{Key: "$facet", Value: bson.D{
+			{Key: "items", Value: mongo.Pipeline{
+				bson.D{{Key: "$skip", Value: (page - 1) * limit}},
+				bson.D{{Key: "$limit", Value: limit}},
+				bson.D{{Key: "$project", Value: bson.D{
+					{Key: "_id", Value: 0},
+					{Key: "domain_record", Value: bson.D{
+						{Key: "_id", Value: "$_id"},
+						{Key: "domain", Value: "$domain"},
+						{Key: "display_name", Value: "$display_name"},
+						{Key: "active", Value: "$active"},
+						{Key: "created_at", Value: "$created_at"},
+						{Key: "updated_at", Value: "$updated_at"},
+						{Key: "archived_at", Value: "$archived_at"},
+					}},
+					{Key: "certificate", Value: "$certificate"},
+				}}},
+			}},
+			{Key: "total", Value: mongo.Pipeline{
+				bson.D{{Key: "$count", Value: "value"}},
+			}},
+		}}},
+	}
+
+	cursor, err := s.domains.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer cursor.Close(ctx)
+	var result []struct {
+		Items []model.LatestCertificate `bson:"items"`
+		Total []struct {
+			Value int64 `bson:"value"`
+		} `bson:"total"`
+	}
+	if err := cursor.All(ctx, &result); err != nil {
+		return nil, 0, err
+	}
+	if len(result) == 0 {
+		return []model.LatestCertificate{}, 0, nil
+	}
+	total := int64(0)
+	if len(result[0].Total) > 0 {
+		total = result[0].Total[0].Value
+	}
+	return result[0].Items, total, nil
 }
 
 func (s *Store) ListJobs(ctx context.Context, status string, limit int64) ([]model.CollectionJob, error) {

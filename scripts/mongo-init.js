@@ -84,6 +84,26 @@ ensureCollection("collection_jobs", {
   },
 });
 
+ensureCollection("domain_certificates", {
+  bsonType: "object",
+  title: "Latest domain TLS certificate",
+  required: ["domain_id", "domain", "checked_at", "hostname_valid"],
+  properties: {
+    _id: { bsonType: "objectId" },
+    domain_id: { bsonType: "objectId" },
+    domain: { bsonType: "string" },
+    issuer: { bsonType: "string" },
+    subject: { bsonType: "string" },
+    serial_number: { bsonType: "string" },
+    dns_names: { bsonType: "array", items: { bsonType: "string" } },
+    valid_from: { bsonType: "date" },
+    expires_at: { bsonType: "date" },
+    checked_at: { bsonType: "date" },
+    hostname_valid: { bsonType: "bool" },
+    error_message: { bsonType: "string" },
+  },
+});
+
 db.domains.createIndex(
   { domain: 1 },
   { name: "uq_domains_domain", unique: true }
@@ -123,6 +143,19 @@ db.collection_jobs.createIndex(
 db.collection_jobs.createIndex(
   { dedupe_key: 1 },
   { name: "uq_jobs_open", unique: true, sparse: true }
+);
+
+db.domain_certificates.createIndex(
+  { domain_id: 1 },
+  { name: "uq_certificates_domain_id", unique: true }
+);
+db.domain_certificates.createIndex(
+  { expires_at: 1 },
+  { name: "ix_certificates_expires" }
+);
+db.domain_certificates.createIndex(
+  { checked_at: -1 },
+  { name: "ix_certificates_checked" }
 );
 
 print("seo_monitor database, validators, and indexes are ready.");
