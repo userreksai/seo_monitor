@@ -100,6 +100,8 @@ ensureCollection("domain_certificates", {
     expires_at: { bsonType: "date" },
     checked_at: { bsonType: "date" },
     hostname_valid: { bsonType: "bool" },
+    check_source: { bsonType: "string" },
+    resolved_address: { bsonType: "string" },
     error_message: { bsonType: "string" },
   },
 });
