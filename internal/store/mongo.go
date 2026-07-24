@@ -431,8 +431,8 @@ func (s *Store) SaveCertificate(ctx context.Context, item model.Certificate) err
 	return nil
 }
 
-// CertificateHistory returns the retained daily polling results for a domain,
-// newest first.
+// CertificateHistory returns retained polling results for a domain, newest
+// first.
 func (s *Store) CertificateHistory(ctx context.Context, id primitive.ObjectID, limit int64) ([]model.Certificate, error) {
 	if limit < 1 || limit > 100 {
 		limit = 50
