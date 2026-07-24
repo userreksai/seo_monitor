@@ -73,6 +73,7 @@ type Certificate struct {
 	DNSNames      []string           `bson:"dns_names,omitempty" json:"dns_names,omitempty"`
 	ValidFrom     *time.Time         `bson:"valid_from,omitempty" json:"valid_from,omitempty"`
 	ExpiresAt     *time.Time         `bson:"expires_at,omitempty" json:"expires_at,omitempty"`
+	CheckDate     time.Time          `bson:"check_date" json:"check_date"`
 	CheckedAt     time.Time          `bson:"checked_at" json:"checked_at"`
 	HostnameValid bool               `bson:"hostname_valid" json:"hostname_valid"`
 	CheckSource   string             `bson:"check_source,omitempty" json:"check_source,omitempty"`

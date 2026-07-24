@@ -34,6 +34,7 @@ type Config struct {
 	CertificateWorkers          int
 	CertificateTimeout          time.Duration
 	CertificateCron             string
+	CertificateRetentionDays    int
 	CertificateAgentURLs        []string
 	CertificateAgentToken       string
 	CertificateAgentTimeout     time.Duration
@@ -67,6 +68,7 @@ func Load() (Config, error) {
 		CertificateWorkers:          envInt("CERTIFICATE_WORKERS", 10),
 		CertificateTimeout:          envDuration("CERTIFICATE_TIMEOUT", 8*time.Second),
 		CertificateCron:             env("CERTIFICATE_CRON", "45 3 * * *"),
+		CertificateRetentionDays:    envInt("CERTIFICATE_RETENTION_DAYS", 7),
 		CertificateAgentURLs:        splitCSV(os.Getenv("CERTIFICATE_AGENT_URLS")),
 		CertificateAgentToken:       strings.TrimSpace(os.Getenv("CERTIFICATE_AGENT_TOKEN")),
 		CertificateAgentTimeout:     envDuration("CERTIFICATE_AGENT_TIMEOUT", 15*time.Second),
@@ -90,6 +92,9 @@ func Load() (Config, error) {
 	}
 	if cfg.CertificateTimeout <= 0 || cfg.CertificateTimeout > time.Minute {
 		return Config{}, fmt.Errorf("CERTIFICATE_TIMEOUT 必须大于 0 且不超过 1m")
+	}
+	if cfg.CertificateRetentionDays < 1 || cfg.CertificateRetentionDays > 365 {
+		return Config{}, fmt.Errorf("CERTIFICATE_RETENTION_DAYS 必须在 1 到 365 之间")
 	}
 	if cfg.CertificateAgentTimeout <= 0 || cfg.CertificateAgentTimeout > time.Minute {
 		return Config{}, fmt.Errorf("CERTIFICATE_AGENT_TIMEOUT 必须大于 0 且不超过 1m")

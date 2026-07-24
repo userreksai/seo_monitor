@@ -51,6 +51,7 @@ func New(st *store.Store, certificates CertificateRefresher, location *time.Loca
 	mux.HandleFunc("GET /api/v1/search", server.searchLatest)
 	mux.HandleFunc("GET /api/v1/certificates", server.listCertificates)
 	mux.HandleFunc("POST /api/v1/certificates/refresh", server.refreshCertificates)
+	mux.HandleFunc("GET /api/v1/certificates/{id}/history", server.certificateHistory)
 	mux.HandleFunc("GET /api/v1/domains/{id}", server.getDomain)
 	mux.HandleFunc("PATCH /api/v1/domains/{id}", server.updateDomain)
 	mux.HandleFunc("DELETE /api/v1/domains/{id}", server.deleteDomain)
@@ -417,6 +418,31 @@ func (s *Server) refreshCertificates(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "message": "证书检测任务已启动"})
+}
+
+func (s *Server) certificateHistory(w http.ResponseWriter, r *http.Request) {
+	id, ok := objectID(w, r)
+	if !ok {
+		return
+	}
+	limit := int64(50)
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
+		limit = parsed
+	}
+	items, err := s.store.CertificateHistory(r.Context(), id, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "查询证书轮询记录失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items,
+		"count": len(items),
+	})
 }
 
 func objectID(w http.ResponseWriter, r *http.Request) (primitive.ObjectID, bool) {

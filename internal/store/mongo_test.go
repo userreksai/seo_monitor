@@ -92,3 +92,34 @@ func TestCertificateExpiredConditionRequiresDate(t *testing.T) {
 		t.Fatalf("certificateExpiredCondition = %#v, want %#v", got, want)
 	}
 }
+
+func TestCertificateSuccessRetentionCutoffProtectsPreviousWeek(t *testing.T) {
+	calendarCutoff := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
+	latestSuccess := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
+	want := time.Date(2026, 6, 23, 0, 0, 0, 0, time.UTC)
+	if got := certificateSuccessRetentionCutoff(calendarCutoff, latestSuccess, 7); !got.Equal(want) {
+		t.Fatalf("certificateSuccessRetentionCutoff = %s, want %s", got, want)
+	}
+}
+
+func TestCertificateSuccessRetentionCutoffUsesCalendarWindowAfterSuccess(t *testing.T) {
+	calendarCutoff := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
+	latestSuccess := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
+	if got := certificateSuccessRetentionCutoff(calendarCutoff, latestSuccess, 7); !got.Equal(calendarCutoff) {
+		t.Fatalf("certificateSuccessRetentionCutoff = %s, want %s", got, calendarCutoff)
+	}
+}
+
+func TestCertificateHistorySuccessMatchExcludesFailures(t *testing.T) {
+	want := bson.M{
+		"check_date": bson.M{"$type": "date"},
+		"$or": bson.A{
+			bson.M{"error_message": bson.M{"$exists": false}},
+			bson.M{"error_message": nil},
+			bson.M{"error_message": ""},
+		},
+	}
+	if got := certificateHistorySuccessMatch(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("certificateHistorySuccessMatch = %#v, want %#v", got, want)
+	}
+}

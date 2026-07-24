@@ -14,7 +14,7 @@
 
 你已经有 MongoDB，几百个域名每天一次的规模对 MongoDB 很小。服务默认保留当天及往前 60 个自然日的数据。趋势图查询使用 `{domain_id: 1, snapshot_date: -1}` 索引；同一域名同一天只保留一条数据，由 `{domain: 1, snapshot_date: 1}` 唯一索引强制保证。
 
-新库包含三个集合：
+新库包含五个集合：
 
 | 集合 | 用途 |
 | --- | --- |
@@ -22,6 +22,7 @@
 | `domain_daily_metrics` | 每日指标快照，趋势图数据源 |
 | `collection_jobs` | 持久任务队列、失败原因和执行状态 |
 | `domain_certificates` | 每个启用域名最近一次 TLS 证书检测结果 |
+| `domain_certificate_history` | TLS 证书每次轮询记录和失败原因 |
 
 API 删除域名时执行软删除（`active=false`），不会删除历史趋势。应用使用 MongoDB 原子抢占任务；重启后卡在 `running` 的旧任务会重新排队。
 
@@ -55,13 +56,16 @@ show collections
 db.domains.getIndexes()
 db.domain_daily_metrics.getIndexes()
 db.domain_certificates.getIndexes()
+db.domain_certificate_history.getIndexes()
 db.getCollectionInfos().forEach(x => printjson({name: x.name, validator: x.options.validator}))
 ```
 
 即使不手动运行脚本，默认的 `ENSURE_INDEXES=true` 也会在服务启动时自动创建
-`domain_certificates` 集合和索引；手动脚本额外配置 JSON Schema Validator。服务启动后会在后台检测
+`domain_certificates`、`domain_certificate_history` 集合和索引；手动脚本额外配置 JSON Schema Validator。服务启动后会在后台检测
 所有启用域名的 443 端口，并按 `CERTIFICATE_CRON` 定时更新。可通过
 `CERTIFICATE_WORKERS` 和 `CERTIFICATE_TIMEOUT` 控制并发数及单域名超时时间。
+`CERTIFICATE_RETENTION_DAYS` 默认为 `7`：当天及往前 7 个自然日的轮询结果会保留；旧失败记录会删除，
+但每个域名最近一次成功检测向前 7 天的成功记录会额外保留。即使新一周全部检测失败，也不会清掉上一周最后的有效证书数据。
 
 主控节点无法解析或连接某些域名时，可以配置一个或多个
 [`SituationAwareness-agent`](https://github.com/userreksai/SituationAwareness-agent) 作为证书检测回退节点：

@@ -140,7 +140,7 @@ func main() {
 		}
 	}
 	certificateService := certificate.NewService(rootCtx, st,
-		certificateChecker, cfg.CertificateWorkers, logger)
+		certificateChecker, cfg.CertificateWorkers, location, cfg.CertificateRetentionDays, logger)
 	certificateService.RefreshAsync()
 
 	queueToday := func(requestedBy string) {

@@ -98,6 +98,30 @@ ensureCollection("domain_certificates", {
     dns_names: { bsonType: "array", items: { bsonType: "string" } },
     valid_from: { bsonType: "date" },
     expires_at: { bsonType: "date" },
+    check_date: { bsonType: "date" },
+    checked_at: { bsonType: "date" },
+    hostname_valid: { bsonType: "bool" },
+    check_source: { bsonType: "string" },
+    resolved_address: { bsonType: "string" },
+    error_message: { bsonType: "string" },
+  },
+});
+
+ensureCollection("domain_certificate_history", {
+  bsonType: "object",
+  title: "Daily TLS certificate polling history",
+  required: ["domain_id", "domain", "check_date", "checked_at", "hostname_valid"],
+  properties: {
+    _id: { bsonType: "objectId" },
+    domain_id: { bsonType: "objectId" },
+    domain: { bsonType: "string" },
+    issuer: { bsonType: "string" },
+    subject: { bsonType: "string" },
+    serial_number: { bsonType: "string" },
+    dns_names: { bsonType: "array", items: { bsonType: "string" } },
+    valid_from: { bsonType: "date" },
+    expires_at: { bsonType: "date" },
+    check_date: { bsonType: "date" },
     checked_at: { bsonType: "date" },
     hostname_valid: { bsonType: "bool" },
     check_source: { bsonType: "string" },
@@ -158,6 +182,18 @@ db.domain_certificates.createIndex(
 db.domain_certificates.createIndex(
   { checked_at: -1 },
   { name: "ix_certificates_checked" }
+);
+db.domain_certificate_history.createIndex(
+  { domain_id: 1, check_date: -1 },
+  { name: "ix_certificate_history_domain_date" }
+);
+db.domain_certificate_history.createIndex(
+  { check_date: -1 },
+  { name: "ix_certificate_history_date" }
+);
+db.domain_certificate_history.createIndex(
+  { domain_id: 1, checked_at: -1 },
+  { name: "ix_certificate_history_domain_checked" }
 );
 
 print("seo_monitor database, validators, and indexes are ready.");

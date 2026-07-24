@@ -50,12 +50,13 @@ var latestSearchFields = map[string]latestSearchField{
 }
 
 type Store struct {
-	client       *mongo.Client
-	db           *mongo.Database
-	domains      *mongo.Collection
-	metrics      *mongo.Collection
-	jobs         *mongo.Collection
-	certificates *mongo.Collection
+	client             *mongo.Client
+	db                 *mongo.Database
+	domains            *mongo.Collection
+	metrics            *mongo.Collection
+	jobs               *mongo.Collection
+	certificates       *mongo.Collection
+	certificateHistory *mongo.Collection
 }
 
 // CleanupResult reports how many records were removed from each retained collection.
@@ -75,12 +76,13 @@ func New(ctx context.Context, uri, database string) (*Store, error) {
 	}
 	db := client.Database(database)
 	return &Store{
-		client:       client,
-		db:           db,
-		domains:      db.Collection("domains"),
-		metrics:      db.Collection("domain_daily_metrics"),
-		jobs:         db.Collection("collection_jobs"),
-		certificates: db.Collection("domain_certificates"),
+		client:             client,
+		db:                 db,
+		domains:            db.Collection("domains"),
+		metrics:            db.Collection("domain_daily_metrics"),
+		jobs:               db.Collection("collection_jobs"),
+		certificates:       db.Collection("domain_certificates"),
+		certificateHistory: db.Collection("domain_certificate_history"),
 	}, nil
 }
 
@@ -129,6 +131,14 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 	})
 	if err != nil {
 		return fmt.Errorf("create certificate indexes: %w", err)
+	}
+	_, err = s.certificateHistory.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "domain_id", Value: 1}, {Key: "check_date", Value: -1}}, Options: options.Index().SetName("ix_certificate_history_domain_date")},
+		{Keys: bson.D{{Key: "check_date", Value: -1}}, Options: options.Index().SetName("ix_certificate_history_date")},
+		{Keys: bson.D{{Key: "domain_id", Value: 1}, {Key: "checked_at", Value: -1}}, Options: options.Index().SetName("ix_certificate_history_domain_checked")},
+	})
+	if err != nil {
+		return fmt.Errorf("create certificate history indexes: %w", err)
 	}
 	return nil
 }
@@ -398,13 +408,130 @@ func (s *Store) LatestMetric(ctx context.Context, id primitive.ObjectID) (*model
 	return &metric, err
 }
 
-// SaveCertificate replaces the latest certificate state for a domain. Keeping
-// one document per domain makes expiry dashboards and alert scans inexpensive.
+// SaveCertificate appends every polling attempt to history, then replaces the
+// latest state used by the certificate dashboard.
 func (s *Store) SaveCertificate(ctx context.Context, item model.Certificate) error {
+	if item.CheckedAt.IsZero() {
+		return fmt.Errorf("certificate checked_at must not be zero")
+	}
+	if item.CheckDate.IsZero() {
+		year, month, day := item.CheckedAt.UTC().Date()
+		item.CheckDate = time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+	}
 	item.ID = primitive.NilObjectID
-	_, err := s.certificates.ReplaceOne(ctx, bson.M{"domain_id": item.DomainID}, item,
+	_, err := s.certificateHistory.InsertOne(ctx, item)
+	if err != nil {
+		return fmt.Errorf("save certificate polling history: %w", err)
+	}
+	_, err = s.certificates.ReplaceOne(ctx, bson.M{"domain_id": item.DomainID}, item,
 		options.Replace().SetUpsert(true))
-	return err
+	if err != nil {
+		return fmt.Errorf("save latest certificate: %w", err)
+	}
+	return nil
+}
+
+// CertificateHistory returns the retained daily polling results for a domain,
+// newest first.
+func (s *Store) CertificateHistory(ctx context.Context, id primitive.ObjectID, limit int64) ([]model.Certificate, error) {
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	cursor, err := s.certificateHistory.Find(ctx, bson.M{"domain_id": id},
+		options.Find().SetSort(bson.D{{Key: "check_date", Value: -1}, {Key: "checked_at", Value: -1}}).SetLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	var items []model.Certificate
+	if err := cursor.All(ctx, &items); err != nil {
+		return nil, err
+	}
+	if items == nil {
+		items = []model.Certificate{}
+	}
+	return items, nil
+}
+
+// CleanupCertificateHistory keeps all polling results inside the normal
+// retention window. Older failures are removed, while successful results keep
+// an additional window ending at the most recent success for each domain. This
+// preserves a week of known-good data during a prolonged outage without
+// retaining every historical failure.
+func (s *Store) CleanupCertificateHistory(ctx context.Context, cutoff time.Time, retentionDays int) (int64, error) {
+	if cutoff.IsZero() {
+		return 0, fmt.Errorf("certificate cleanup cutoff must not be zero")
+	}
+	if retentionDays < 1 {
+		return 0, fmt.Errorf("certificate retention days must be positive")
+	}
+
+	oldFailures, err := s.certificateHistory.DeleteMany(ctx, bson.M{
+		"check_date":    bson.M{"$type": "date", "$lt": cutoff},
+		"error_message": bson.M{"$type": "string", "$ne": ""},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("delete expired certificate failures: %w", err)
+	}
+	deleted := oldFailures.DeletedCount
+
+	cursor, err := s.certificateHistory.Aggregate(ctx, mongo.Pipeline{
+		bson.D{{Key: "$match", Value: certificateHistorySuccessMatch()}},
+		bson.D{{Key: "$group", Value: bson.M{
+			"_id":            "$domain_id",
+			"latest_success": bson.M{"$max": "$check_date"},
+		}}},
+	})
+	if err != nil {
+		return deleted, fmt.Errorf("find latest certificate successes: %w", err)
+	}
+	defer cursor.Close(ctx)
+	var latestSuccesses []struct {
+		DomainID      primitive.ObjectID `bson:"_id"`
+		LatestSuccess time.Time          `bson:"latest_success"`
+	}
+	if err := cursor.All(ctx, &latestSuccesses); err != nil {
+		return deleted, fmt.Errorf("decode latest certificate successes: %w", err)
+	}
+
+	models := make([]mongo.WriteModel, 0, len(latestSuccesses))
+	for _, success := range latestSuccesses {
+		successCutoff := certificateSuccessRetentionCutoff(cutoff, success.LatestSuccess, retentionDays)
+		filter := certificateHistorySuccessMatch()
+		filter["domain_id"] = success.DomainID
+		filter["check_date"] = bson.M{"$type": "date", "$lt": successCutoff}
+		models = append(models, mongo.NewDeleteManyModel().SetFilter(filter))
+	}
+	if len(models) == 0 {
+		return deleted, nil
+	}
+	result, err := s.certificateHistory.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
+	if err != nil {
+		return deleted, fmt.Errorf("delete expired certificate successes: %w", err)
+	}
+	return deleted + result.DeletedCount, nil
+}
+
+func certificateHistorySuccessMatch() bson.M {
+	return bson.M{
+		"check_date": bson.M{"$type": "date"},
+		"$or": bson.A{
+			bson.M{"error_message": bson.M{"$exists": false}},
+			bson.M{"error_message": nil},
+			bson.M{"error_message": ""},
+		},
+	}
+}
+
+func certificateSuccessRetentionCutoff(cutoff, latestSuccess time.Time, retentionDays int) time.Time {
+	if latestSuccess.IsZero() {
+		return cutoff
+	}
+	successCutoff := latestSuccess.AddDate(0, 0, -retentionDays)
+	if successCutoff.Before(cutoff) {
+		return successCutoff
+	}
+	return cutoff
 }
 
 // ListCertificates returns active domains joined with their latest certificate

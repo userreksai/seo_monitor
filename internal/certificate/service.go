@@ -8,21 +8,27 @@ import (
 	"sync/atomic"
 	"time"
 
+	"seo-monitor/internal/collector"
 	"seo-monitor/internal/model"
 	"seo-monitor/internal/store"
 )
 
 type Service struct {
-	ctx        context.Context
-	store      *store.Store
-	checker    Checker
-	workers    int
-	logger     *slog.Logger
-	refreshing atomic.Bool
+	ctx           context.Context
+	store         *store.Store
+	checker       Checker
+	workers       int
+	location      *time.Location
+	retentionDays int
+	logger        *slog.Logger
+	refreshing    atomic.Bool
 }
 
-func NewService(ctx context.Context, st *store.Store, checker Checker, workers int, logger *slog.Logger) *Service {
-	return &Service{ctx: ctx, store: st, checker: checker, workers: workers, logger: logger}
+func NewService(ctx context.Context, st *store.Store, checker Checker, workers int, location *time.Location, retentionDays int, logger *slog.Logger) *Service {
+	return &Service{
+		ctx: ctx, store: st, checker: checker, workers: workers,
+		location: location, retentionDays: retentionDays, logger: logger,
+	}
 }
 
 // RefreshAsync starts a full certificate scan unless one is already running.
@@ -61,6 +67,7 @@ func (s *Service) refreshAll(ctx context.Context) {
 				if item.CheckedAt.IsZero() {
 					item.CheckedAt = time.Now().UTC()
 				}
+				item.CheckDate = collector.SnapshotDate(item.CheckedAt, s.location)
 				if checkErr != nil {
 					message := strings.TrimSpace(checkErr.Error())
 					if len(message) > 2000 {
@@ -88,6 +95,15 @@ enqueue:
 	}
 	close(jobs)
 	waitGroup.Wait()
+	cutoff := collector.RetentionCutoff(time.Now(), s.location, s.retentionDays)
+	deleted, cleanupErr := s.store.CleanupCertificateHistory(ctx, cutoff, s.retentionDays)
+	if cleanupErr != nil {
+		s.logger.Error("cleanup certificate polling history", "cutoff", cutoff.Format("2006-01-02"),
+			"retention_days", s.retentionDays, "error", cleanupErr)
+	} else {
+		s.logger.Info("certificate polling history cleaned", "cutoff", cutoff.Format("2006-01-02"),
+			"retention_days", s.retentionDays, "deleted", deleted)
+	}
 	s.logger.Info("certificate refresh completed", "domains", len(domains), "succeeded", succeeded.Load(),
 		"failed", failed.Load(), "duration", time.Since(startedAt))
 }
