@@ -2,6 +2,8 @@ package scraper
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -56,6 +58,56 @@ func TestParseSEOResult(t *testing.T) {
 func TestParseRejectsChallengePage(t *testing.T) {
 	if _, err := Parse([]byte("<html><body>verify</body></html>")); err == nil {
 		t.Fatal("expected missing result table error")
+	}
+}
+
+func TestFetchFallsBackToDataEndpointsForEmptyResultTable(t *testing.T) {
+	dataServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/Rank.ashx":
+			_, _ = w.Write([]byte(`seoMonitorCallback({"StateCode":1,"Result":{"baiduPc":{"rank":0,"uv_min":0,"uv_max":0},"baiduMobile":{"rank":0,"uv_min":0,"uv_max":0},"sogouPc":{"rank":0,"uv_min":0,"uv_max":0},"bing":{"rank":0,"uv_min":0,"uv_max":0},"haosouPc":{"rank":0,"uv_min":0,"uv_max":0},"shenma":{"rank":0,"uv_min":0,"uv_max":0}}})`))
+		case "/SiteAPPAndPC.ashx", "/GetTopRanked.ashx":
+			_, _ = w.Write([]byte(`seoMonitorCallback({"StateCode":0,"Result":null})`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer dataServer.Close()
+
+	pageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<html><body><table class="_chinaz-seo-newt"><tbody></tbody></table><script>var enkey = "public-key";</script></body></html>`))
+	}))
+	defer pageServer.Close()
+
+	source, err := NewChinaz(Config{
+		BaseURL:          pageServer.URL,
+		DataBaseURL:      dataServer.URL,
+		UserAgent:        "seo-monitor test",
+		Timeout:          time.Second,
+		Retries:          1,
+		MaxResponseBytes: 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	metric, err := source.Fetch(context.Background(), "77cn.com.cn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertInt64(t, "traffic min", metric.TrafficMin, 0)
+	assertInt64(t, "traffic max", metric.TrafficMax, 0)
+	if metric.TrafficText == nil || *metric.TrafficText != "0 ~ 0" {
+		t.Fatalf("traffic text = %v", metric.TrafficText)
+	}
+	assertInt16(t, "baidu pc", metric.BaiduPCWeight, 0)
+	assertInt16(t, "baidu mobile", metric.BaiduMobile, 0)
+	assertInt16(t, "sogou", metric.SogouWeight, 0)
+	assertInt16(t, "bing", metric.BingWeight, 0)
+	assertInt16(t, "360", metric.So360Weight, 0)
+	assertInt16(t, "shenma", metric.ShenmaWeight, 0)
+	if metric.PRWeight != nil || metric.SiteCategory != nil || metric.DomainAgeText != nil {
+		t.Fatalf("unavailable fields must stay nil: %+v", metric)
 	}
 }
 

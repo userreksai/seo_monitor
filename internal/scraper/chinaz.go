@@ -103,38 +103,32 @@ func (c *Chinaz) fetchComplete(ctx context.Context, domain string) (model.Metric
 	if err != nil {
 		return model.Metric{}, err
 	}
-	secretKey, err := extractSecretKey(pageBody)
-	if err != nil {
-		return model.Metric{}, err
-	}
+	rawBodies := [][]byte{pageBody}
+	if secretKey, keyErr := extractSecretKey(pageBody); keyErr == nil {
+		if rankBody, fetchErr := c.fetchData(ctx, "/Rank.ashx", "rankdata", domain, secretKey, pageURL); fetchErr == nil {
+			rawBodies = append(rawBodies, rankBody)
+			// A valid SEO result page may legitimately have no rank result.
+			// Keep the fields parsed from the page (or nil) in that case.
+			_ = mergeRankResponse(rankBody, &metric)
+		}
 
-	rankBody, err := c.fetchData(ctx, "/Rank.ashx", "rankdata", domain, secretKey, pageURL)
-	if err != nil {
-		return model.Metric{}, fmt.Errorf("fetch weight data: %w", err)
-	}
-	if err := mergeRankResponse(rankBody, &metric); err != nil {
-		return model.Metric{}, err
-	}
+		if apppcBody, fetchErr := c.fetchData(ctx, "/SiteAPPAndPC.ashx", "", domain, secretKey, pageURL); fetchErr == nil {
+			rawBodies = append(rawBodies, apppcBody)
+			_ = mergeAPPPCResponse(apppcBody, &metric)
+		}
 
-	apppcBody, err := c.fetchData(ctx, "/SiteAPPAndPC.ashx", "", domain, secretKey, pageURL)
-	if err != nil {
-		return model.Metric{}, fmt.Errorf("fetch APPPC data: %w", err)
+		if categoryBody, fetchErr := c.fetchData(ctx, "/GetTopRanked.ashx", "GetSiteCategory", domain, secretKey, pageURL); fetchErr == nil {
+			rawBodies = append(rawBodies, categoryBody)
+			_ = mergeCategoryResponse(categoryBody, &metric)
+		}
 	}
-	if err := mergeAPPPCResponse(apppcBody, &metric); err != nil {
-		return model.Metric{}, err
-	}
-
-	categoryBody, err := c.fetchData(ctx, "/GetTopRanked.ashx", "GetSiteCategory", domain, secretKey, pageURL)
-	if err != nil {
-		return model.Metric{}, fmt.Errorf("fetch site category: %w", err)
-	}
-	if err := mergeCategoryResponse(categoryBody, &metric); err != nil {
+	if err := ctx.Err(); err != nil {
 		return model.Metric{}, err
 	}
 
 	metric.SourceURL = pageURL
 	hasher := sha256.New()
-	for _, raw := range [][]byte{pageBody, rankBody, apppcBody, categoryBody} {
+	for _, raw := range rawBodies {
 		_, _ = hasher.Write(raw)
 		_, _ = hasher.Write([]byte{0})
 	}
@@ -398,9 +392,9 @@ func (c *Chinaz) waitForSlot(ctx context.Context) error {
 	}
 }
 
-// Parse extracts only the result table requested by the user. It deliberately
-// fails when the table is absent so CAPTCHA/challenge pages are never stored as
-// successful zero-value snapshots.
+// Parse extracts the SEO result table. The table itself is the validity marker:
+// it rejects CAPTCHA/challenge pages, while an empty valid table is allowed so
+// fetchComplete can populate traffic and weights from Chinaz's data endpoints.
 func Parse(body []byte) (model.Metric, error) {
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
 	if err != nil {
@@ -441,9 +435,6 @@ func Parse(body []byte) (model.Metric, error) {
 		return false
 	})
 
-	if metric.TrafficMin == nil && metric.BaiduPCWeight == nil && metric.APPPCPCrank == nil && metric.DomainAgeText == nil {
-		return model.Metric{}, errors.New("SEO 结果表不含可识别数据，页面结构可能已变化")
-	}
 	return metric, nil
 }
 
