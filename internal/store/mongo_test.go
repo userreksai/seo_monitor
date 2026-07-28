@@ -43,6 +43,20 @@ func TestLatestSearchMatchValidation(t *testing.T) {
 	}
 }
 
+func TestLatestCollectionStatusMatch(t *testing.T) {
+	got, err := latestCollectionStatusMatch("failed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bson.D{{Key: "collection.status", Value: "failed"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("latestCollectionStatusMatch(failed) = %#v, want %#v", got, want)
+	}
+	if _, err := latestCollectionStatusMatch("unknown"); !errors.Is(err, ErrInvalidSearch) {
+		t.Fatalf("expected invalid collection status error, got %v", err)
+	}
+}
+
 func TestSnapshotDateBeforeFilterKeepsCutoffDate(t *testing.T) {
 	cutoff := time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC)
 	got := snapshotDateBeforeFilter(cutoff)

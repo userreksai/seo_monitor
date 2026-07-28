@@ -32,6 +32,7 @@ type Server struct {
 
 type CertificateRefresher interface {
 	RefreshAsync() bool
+	Progress() model.TaskProgress
 }
 
 func New(st *store.Store, certificates CertificateRefresher, location *time.Location, apiToken string, origins []string, logger *slog.Logger) http.Handler {
@@ -51,6 +52,7 @@ func New(st *store.Store, certificates CertificateRefresher, location *time.Loca
 	mux.HandleFunc("GET /api/v1/search", server.searchLatest)
 	mux.HandleFunc("GET /api/v1/certificates", server.listCertificates)
 	mux.HandleFunc("POST /api/v1/certificates/refresh", server.refreshCertificates)
+	mux.HandleFunc("GET /api/v1/certificates/progress", server.certificateProgress)
 	mux.HandleFunc("GET /api/v1/certificates/{id}/history", server.certificateHistory)
 	mux.HandleFunc("GET /api/v1/domains/{id}", server.getDomain)
 	mux.HandleFunc("PATCH /api/v1/domains/{id}", server.updateDomain)
@@ -59,6 +61,7 @@ func New(st *store.Store, certificates CertificateRefresher, location *time.Loca
 	mux.HandleFunc("GET /api/v1/domains/{id}/metrics", server.domainMetrics)
 	mux.HandleFunc("GET /api/v1/domains/{id}/latest", server.latestMetric)
 	mux.HandleFunc("POST /api/v1/collect", server.collectAll)
+	mux.HandleFunc("GET /api/v1/collect/progress", server.collectionProgress)
 	mux.HandleFunc("GET /api/v1/jobs", server.listJobs)
 
 	return server.recoverPanic(server.logRequests(server.cors(server.authenticate(mux))))
@@ -269,6 +272,16 @@ func (s *Server) collectAll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"queued": count, "snapshot_date": date})
 }
 
+func (s *Server) collectionProgress(w http.ResponseWriter, r *http.Request) {
+	date := collector.SnapshotDate(time.Now(), s.location)
+	progress, err := s.store.CollectionProgress(r.Context(), date)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "查询采集进度失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, progress)
+}
+
 func (s *Server) domainMetrics(w http.ResponseWriter, r *http.Request) {
 	id, ok := objectID(w, r)
 	if !ok {
@@ -336,6 +349,7 @@ func (s *Server) searchLatest(w http.ResponseWriter, r *http.Request) {
 		field = "domain"
 	}
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	page := int64(1)
 	limit := int64(50)
 	if raw := r.URL.Query().Get("page"); raw != "" {
@@ -355,7 +369,7 @@ func (s *Server) searchLatest(w http.ResponseWriter, r *http.Request) {
 		limit = parsed
 	}
 
-	items, total, err := s.store.SearchLatest(r.Context(), field, query, page, limit)
+	items, total, err := s.store.SearchLatest(r.Context(), field, query, status, page, limit)
 	if errors.Is(err, store.ErrInvalidSearch) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -366,7 +380,7 @@ func (s *Server) searchLatest(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": items, "count": len(items), "total": total,
-		"page": page, "limit": limit, "field": field, "q": query,
+		"page": page, "limit": limit, "field": field, "q": query, "status": status,
 	})
 }
 
@@ -414,10 +428,22 @@ func (s *Server) refreshCertificates(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	if !s.certificates.RefreshAsync() {
-		writeJSON(w, http.StatusOK, map[string]any{"started": false, "message": "证书检测任务正在执行"})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"started": false, "message": "证书检测任务正在执行", "progress": s.certificates.Progress(),
+		})
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "message": "证书检测任务已启动"})
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"started": true, "message": "证书检测任务已启动", "progress": s.certificates.Progress(),
+	})
+}
+
+func (s *Server) certificateProgress(w http.ResponseWriter, _ *http.Request) {
+	if s.certificates == nil {
+		writeError(w, http.StatusServiceUnavailable, "证书检测服务未启用")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.certificates.Progress())
 }
 
 func (s *Server) certificateHistory(w http.ResponseWriter, r *http.Request) {

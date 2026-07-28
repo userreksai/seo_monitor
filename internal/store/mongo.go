@@ -117,6 +117,7 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 	_, err = s.jobs.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "queued_at", Value: 1}}, Options: options.Index().SetName("ix_jobs_status_queue")},
 		{Keys: bson.D{{Key: "domain_id", Value: 1}, {Key: "snapshot_date", Value: -1}}, Options: options.Index().SetName("ix_jobs_domain_date")},
+		{Keys: bson.D{{Key: "domain_id", Value: 1}, {Key: "queued_at", Value: -1}}, Options: options.Index().SetName("ix_jobs_domain_latest")},
 		{Keys: bson.D{{Key: "snapshot_date", Value: -1}}, Options: options.Index().SetName("ix_jobs_date")},
 		{Keys: bson.D{{Key: "dedupe_key", Value: 1}}, Options: options.Index().SetName("uq_jobs_open").SetUnique(true).SetSparse(true)},
 	})
@@ -710,11 +711,90 @@ func (s *Store) ListJobs(ctx context.Context, status string, limit int64) ([]mod
 	return items, nil
 }
 
+// CollectionProgress returns the latest job state for every active domain on
+// one collection date. Starting from domains keeps never-queued domains in the
+// pending count and avoids double-counting retries.
+func (s *Store) CollectionProgress(ctx context.Context, snapshotDate time.Time) (model.CollectionProgress, error) {
+	progress := model.CollectionProgress{SnapshotDate: snapshotDate}
+	statusCount := func(status string) bson.M {
+		return bson.M{"$sum": bson.M{"$cond": bson.A{
+			bson.M{"$eq": bson.A{"$collection_status", status}}, 1, 0,
+		}}}
+	}
+	pipeline := mongo.Pipeline{
+		bson.D{{Key: "$match", Value: bson.M{"active": true}}},
+		bson.D{{Key: "$lookup", Value: bson.M{
+			"from": "collection_jobs",
+			"let":  bson.M{"domainID": "$_id"},
+			"pipeline": mongo.Pipeline{
+				bson.D{{Key: "$match", Value: bson.M{"$expr": bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$domain_id", "$$domainID"}},
+					bson.M{"$eq": bson.A{"$snapshot_date", snapshotDate}},
+				}}}}},
+				bson.D{{Key: "$sort", Value: bson.D{{Key: "queued_at", Value: -1}}}},
+				bson.D{{Key: "$limit", Value: 1}},
+			},
+			"as": "collection_jobs",
+		}}},
+		bson.D{{Key: "$set", Value: bson.M{
+			"collection_status": bson.M{"$ifNull": bson.A{
+				bson.M{"$arrayElemAt": bson.A{"$collection_jobs.status", 0}},
+				"pending",
+			}},
+		}}},
+		bson.D{{Key: "$group", Value: bson.M{
+			"_id":       nil,
+			"total":     bson.M{"$sum": 1},
+			"pending":   statusCount("pending"),
+			"queued":    statusCount("queued"),
+			"running":   statusCount("running"),
+			"succeeded": statusCount("succeeded"),
+			"failed":    statusCount("failed"),
+			"canceled":  statusCount("canceled"),
+		}}},
+	}
+	cursor, err := s.domains.Aggregate(ctx, pipeline)
+	if err != nil {
+		return progress, err
+	}
+	defer cursor.Close(ctx)
+	var results []struct {
+		Total     int64 `bson:"total"`
+		Pending   int64 `bson:"pending"`
+		Queued    int64 `bson:"queued"`
+		Running   int64 `bson:"running"`
+		Succeeded int64 `bson:"succeeded"`
+		Failed    int64 `bson:"failed"`
+		Canceled  int64 `bson:"canceled"`
+	}
+	if err := cursor.All(ctx, &results); err != nil {
+		return progress, err
+	}
+	if len(results) == 0 {
+		return progress, nil
+	}
+	result := results[0]
+	progress.Total = result.Total
+	progress.Pending = result.Pending
+	progress.Queued = result.Queued
+	progress.Running = result.Running
+	progress.Succeeded = result.Succeeded
+	progress.Failed = result.Failed
+	progress.Canceled = result.Canceled
+	progress.Completed = result.Succeeded + result.Failed + result.Canceled
+	progress.InProgress = result.Queued > 0 || result.Running > 0
+	return progress, nil
+}
+
 // SearchLatest returns active domains with their newest metric snapshot. Only
 // fields in latestSearchFields are accepted, preventing arbitrary MongoDB paths
 // from being supplied by API callers.
-func (s *Store) SearchLatest(ctx context.Context, field, query string, page, limit int64) ([]model.LatestMetric, int64, error) {
+func (s *Store) SearchLatest(ctx context.Context, field, query, status string, page, limit int64) ([]model.LatestMetric, int64, error) {
 	match, err := latestSearchMatch(field, query)
+	if err != nil {
+		return nil, 0, err
+	}
+	statusMatch, err := latestCollectionStatusMatch(status)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -740,13 +820,33 @@ func (s *Store) SearchLatest(ctx context.Context, field, query string, page, lim
 	setMetricStage := bson.D{{Key: "$set", Value: bson.M{
 		"metric": bson.M{"$arrayElemAt": bson.A{"$metric_docs", 0}},
 	}}}
+	collectionLookupStage := bson.D{{Key: "$lookup", Value: bson.M{
+		"from": "collection_jobs",
+		"let":  bson.M{"domainID": "$_id"},
+		"pipeline": mongo.Pipeline{
+			bson.D{{Key: "$match", Value: bson.M{
+				"$expr": bson.M{"$eq": bson.A{"$domain_id", "$$domainID"}},
+			}}},
+			bson.D{{Key: "$sort", Value: bson.D{{Key: "queued_at", Value: -1}}}},
+			bson.D{{Key: "$limit", Value: 1}},
+		},
+		"as": "collection_docs",
+	}}}
+	setCollectionStage := bson.D{{Key: "$set", Value: bson.M{
+		"collection": bson.M{"$arrayElemAt": bson.A{"$collection_docs", 0}},
+	}}}
 	pipeline := mongo.Pipeline{
 		bson.D{{Key: "$match", Value: bson.M{"active": true}}},
 		lookupStage,
 		setMetricStage,
+		collectionLookupStage,
+		setCollectionStage,
 	}
 	if len(match) > 0 {
 		pipeline = append(pipeline, bson.D{{Key: "$match", Value: match}})
+	}
+	if len(statusMatch) > 0 {
+		pipeline = append(pipeline, bson.D{{Key: "$match", Value: statusMatch}})
 	}
 	pipeline = append(pipeline,
 		bson.D{{Key: "$sort", Value: bson.D{{Key: "domain", Value: 1}}}},
@@ -766,6 +866,7 @@ func (s *Store) SearchLatest(ctx context.Context, field, query string, page, lim
 						{Key: "archived_at", Value: "$archived_at"},
 					}},
 					{Key: "metric", Value: "$metric"},
+					{Key: "collection", Value: "$collection"},
 				}}},
 			}},
 			{Key: "total", Value: mongo.Pipeline{
@@ -796,6 +897,17 @@ func (s *Store) SearchLatest(ctx context.Context, field, query string, page, lim
 		total = result[0].Total[0].Value
 	}
 	return result[0].Items, total, nil
+}
+
+func latestCollectionStatusMatch(status string) (bson.D, error) {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "":
+		return nil, nil
+	case "failed":
+		return bson.D{{Key: "collection.status", Value: "failed"}}, nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported collection status %q", ErrInvalidSearch, status)
+	}
 }
 
 func latestSearchMatch(field, query string) (bson.D, error) {

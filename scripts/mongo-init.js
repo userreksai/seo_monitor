@@ -162,6 +162,10 @@ db.collection_jobs.createIndex(
   { name: "ix_jobs_domain_date" }
 );
 db.collection_jobs.createIndex(
+  { domain_id: 1, queued_at: -1 },
+  { name: "ix_jobs_domain_latest" }
+);
+db.collection_jobs.createIndex(
   { snapshot_date: -1 },
   { name: "ix_jobs_date" }
 );
