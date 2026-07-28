@@ -22,6 +22,8 @@ type Service struct {
 	retentionDays int
 	logger        *slog.Logger
 	refreshing    atomic.Bool
+	progressMu    sync.RWMutex
+	progress      model.TaskProgress
 }
 
 func NewService(ctx context.Context, st *store.Store, checker Checker, workers int, location *time.Location, retentionDays int, logger *slog.Logger) *Service {
@@ -37,11 +39,23 @@ func (s *Service) RefreshAsync() bool {
 	if !s.refreshing.CompareAndSwap(false, true) {
 		return false
 	}
+	startedAt := time.Now().UTC()
+	s.progressMu.Lock()
+	s.progress = model.TaskProgress{Running: true, StartedAt: &startedAt}
+	s.progressMu.Unlock()
 	go func() {
 		defer s.refreshing.Store(false)
+		defer s.finishProgress()
 		s.refreshAll(s.ctx)
 	}()
 	return true
+}
+
+// Progress returns a race-free snapshot for API polling.
+func (s *Service) Progress() model.TaskProgress {
+	s.progressMu.RLock()
+	defer s.progressMu.RUnlock()
+	return s.progress
 }
 
 func (s *Service) refreshAll(ctx context.Context) {
@@ -50,6 +64,9 @@ func (s *Service) refreshAll(ctx context.Context) {
 		s.logger.Error("list domains for certificate refresh", "error", err)
 		return
 	}
+	s.progressMu.Lock()
+	s.progress.Total = int64(len(domains))
+	s.progressMu.Unlock()
 	startedAt := time.Now()
 	jobs := make(chan model.Domain)
 	var waitGroup sync.WaitGroup
@@ -62,6 +79,7 @@ func (s *Service) refreshAll(ctx context.Context) {
 			defer waitGroup.Done()
 			for domain := range jobs {
 				item, checkErr := s.checker.Check(ctx, domain.Domain)
+				progressSucceeded := checkErr == nil
 				item.DomainID = domain.ID
 				item.Domain = domain.Domain
 				if item.CheckedAt.IsZero() {
@@ -80,7 +98,9 @@ func (s *Service) refreshAll(ctx context.Context) {
 				}
 				if saveErr := s.store.SaveCertificate(ctx, item); saveErr != nil {
 					s.logger.Error("save domain certificate", "domain", domain.Domain, "error", saveErr)
+					progressSucceeded = false
 				}
+				s.recordProgress(progressSucceeded)
 			}
 		}()
 	}
@@ -106,4 +126,23 @@ enqueue:
 	}
 	s.logger.Info("certificate refresh completed", "domains", len(domains), "succeeded", succeeded.Load(),
 		"failed", failed.Load(), "duration", time.Since(startedAt))
+}
+
+func (s *Service) recordProgress(succeeded bool) {
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
+	s.progress.Completed++
+	if succeeded {
+		s.progress.Succeeded++
+		return
+	}
+	s.progress.Failed++
+}
+
+func (s *Service) finishProgress() {
+	finishedAt := time.Now().UTC()
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
+	s.progress.Running = false
+	s.progress.FinishedAt = &finishedAt
 }

@@ -274,9 +274,12 @@ Content-Type: application/json
 | `DELETE` | `/api/v1/domains/{id}` | 软删除/归档 |
 | `POST` | `/api/v1/domains/{id}/collect` | 手动排队采集单个域名 |
 | `POST` | `/api/v1/collect` | 排队采集全部启用域名 |
+| `GET` | `/api/v1/collect/progress` | 当天采集进度、成功数和失败数 |
 | `GET` | `/api/v1/domains/{id}/latest` | 最新快照 |
 | `GET` | `/api/v1/domains/{id}/metrics?from=2026-01-01&to=2026-07-10` | 趋势数据 |
-| `GET` | `/api/v1/search?field=domain&q=example&page=1&limit=50` | 按指定字段搜索域名及最新指标 |
+| `GET` | `/api/v1/search?field=domain&q=example&status=failed&page=1&limit=50` | 按指定字段搜索域名及最新指标；`status=failed` 筛选最近采集失败 |
+| `POST` | `/api/v1/certificates/refresh` | 启动全部证书检测 |
+| `GET` | `/api/v1/certificates/progress` | 当前/最近一次证书检测进度 |
 | `GET` | `/api/v1/jobs?status=failed&limit=100` | 任务与错误记录 |
 
 新增一个域名：

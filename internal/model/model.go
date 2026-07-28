@@ -56,8 +56,9 @@ type Metric struct {
 }
 
 type LatestMetric struct {
-	Domain Domain  `bson:"domain_record" json:"domain"`
-	Metric *Metric `bson:"metric,omitempty" json:"metric,omitempty"`
+	Domain     Domain         `bson:"domain_record" json:"domain"`
+	Metric     *Metric        `bson:"metric,omitempty" json:"metric,omitempty"`
+	Collection *CollectionJob `bson:"collection,omitempty" json:"collection,omitempty"`
 }
 
 // Certificate is the latest TLS certificate observed for a monitored domain.
@@ -92,6 +93,34 @@ type CertificateSummary struct {
 	ExpiringSoon int64 `bson:"expiring_soon" json:"expiring_soon"`
 	Expired      int64 `bson:"expired" json:"expired"`
 	Failed       int64 `bson:"failed" json:"failed"`
+}
+
+// TaskProgress is the in-memory progress snapshot for one full certificate
+// refresh. The latest completed snapshot remains available until the next run.
+type TaskProgress struct {
+	Running    bool       `json:"running"`
+	Total      int64      `json:"total"`
+	Completed  int64      `json:"completed"`
+	Succeeded  int64      `json:"succeeded"`
+	Failed     int64      `json:"failed"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+// CollectionProgress summarizes the latest job for every active domain on one
+// snapshot date. It is derived from MongoDB so progress survives page reloads
+// and service restarts.
+type CollectionProgress struct {
+	SnapshotDate time.Time `json:"snapshot_date"`
+	InProgress   bool      `json:"in_progress"`
+	Total        int64     `json:"total"`
+	Completed    int64     `json:"completed"`
+	Pending      int64     `json:"pending"`
+	Queued       int64     `json:"queued"`
+	Running      int64     `json:"running"`
+	Succeeded    int64     `json:"succeeded"`
+	Failed       int64     `json:"failed"`
+	Canceled     int64     `json:"canceled"`
 }
 
 type CollectionJob struct {
