@@ -14,6 +14,7 @@ APP_MONGODB_URI=${MONGODB_URI:-mongodb://127.0.0.1:27017}
 MONGO_ADMIN_URI=${MONGO_ADMIN_URI:-$APP_MONGODB_URI}
 SKIP_MONGO_INIT=${SKIP_MONGO_INIT:-0}
 DOMAINS_BACKUP=
+CERTIFICATE_DOMAINS_BACKUP=
 LEGACY_BACKUP=
 
 log() {
@@ -37,12 +38,18 @@ restore_domains() {
   if [ -n "$DOMAINS_BACKUP" ] && [ -f "$DOMAINS_BACKUP" ] && [ -d "$INSTALL_DIR" ]; then
     cp "$DOMAINS_BACKUP" "$INSTALL_DIR/domains.json"
   fi
+  if [ -n "$CERTIFICATE_DOMAINS_BACKUP" ] && [ -f "$CERTIFICATE_DOMAINS_BACKUP" ] && [ -d "$INSTALL_DIR" ]; then
+    cp "$CERTIFICATE_DOMAINS_BACKUP" "$INSTALL_DIR/certificate_domains.json"
+  fi
 }
 
 cleanup() {
   restore_domains
   if [ -n "$DOMAINS_BACKUP" ] && [ -f "$DOMAINS_BACKUP" ]; then
     rm -f "$DOMAINS_BACKUP"
+  fi
+  if [ -n "$CERTIFICATE_DOMAINS_BACKUP" ] && [ -f "$CERTIFICATE_DOMAINS_BACKUP" ]; then
+    rm -f "$CERTIFICATE_DOMAINS_BACKUP"
   fi
 }
 
@@ -77,6 +84,13 @@ if [ -d "$INSTALL_DIR/.git" ]; then
       git_repo checkout HEAD -- domains.json
     fi
   fi
+  if [ -f "$INSTALL_DIR/certificate_domains.json" ]; then
+    CERTIFICATE_DOMAINS_BACKUP=$(mktemp)
+    cp "$INSTALL_DIR/certificate_domains.json" "$CERTIFICATE_DOMAINS_BACKUP"
+    if git_repo ls-files --error-unmatch certificate_domains.json >/dev/null 2>&1; then
+      git_repo checkout HEAD -- certificate_domains.json
+    fi
+  fi
 
   if [ -n "$(git_repo status --porcelain)" ]; then
     git_repo status --short >&2
@@ -94,7 +108,7 @@ else
     if [ -f "$INSTALL_DIR/go.mod" ] && grep -Eq '^module[[:space:]]+seo-monitor([[:space:]]|$)' "$INSTALL_DIR/go.mod"; then
       :
     else
-      UNEXPECTED_ENTRY=$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 ! -name domains.json ! -name .env -print -quit)
+      UNEXPECTED_ENTRY=$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 ! -name domains.json ! -name certificate_domains.json ! -name .env -print -quit)
       if [ -n "$UNEXPECTED_ENTRY" ]; then
         fail "$INSTALL_DIR contains an unexpected entry: $UNEXPECTED_ENTRY"
       fi
@@ -109,6 +123,9 @@ else
     fi
     if [ -f "$INSTALL_DIR/domains.json" ]; then
       cp -p "$INSTALL_DIR/domains.json" "$STAGING_DIR/repository/domains.json"
+    fi
+    if [ -f "$INSTALL_DIR/certificate_domains.json" ]; then
+      cp -p "$INSTALL_DIR/certificate_domains.json" "$STAGING_DIR/repository/certificate_domains.json"
     fi
 
     LEGACY_BACKUP="${INSTALL_DIR}.backup.$(date '+%Y%m%d%H%M%S')"
@@ -129,6 +146,11 @@ restore_domains
 if [ ! -f "$INSTALL_DIR/domains.json" ]; then
   cp "$INSTALL_DIR/domains.example.json" "$INSTALL_DIR/domains.json"
 fi
+if [ ! -f "$INSTALL_DIR/certificate_domains.json" ]; then
+  # Preserve pre-split behavior on upgrades; operators can edit the two files
+  # independently after installation.
+  cp "$INSTALL_DIR/domains.json" "$INSTALL_DIR/certificate_domains.json"
+fi
 
 log "Creating service account"
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then
@@ -143,6 +165,7 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     printf 'MONGODB_DATABASE=seo_monitor\n'
     printf 'ENSURE_INDEXES=true\n'
     printf 'DOMAINS_FILE=domains.json\n'
+    printf 'CERTIFICATE_DOMAINS_FILE=certificate_domains.json\n'
     printf 'HTTP_ADDR=127.0.0.1:10001\n'
     printf 'API_TOKEN=%s\n' "$APP_API_TOKEN"
     printf 'CORS_ALLOWED_ORIGINS=\n'
@@ -176,6 +199,7 @@ else
     BEGIN {
       http_updated = 0
       retention_seen = 0
+      certificate_domains_file_seen = 0
       certificate_agent_urls_seen = 0
       certificate_agent_token_seen = 0
       certificate_agent_timeout_seen = 0
@@ -189,6 +213,7 @@ else
       next
     }
     /^RETENTION_DAYS=/ { retention_seen = 1 }
+    /^CERTIFICATE_DOMAINS_FILE=/ { certificate_domains_file_seen = 1 }
     /^CERTIFICATE_AGENT_URLS=/ { certificate_agent_urls_seen = 1 }
     /^CERTIFICATE_AGENT_TOKEN=/ { certificate_agent_token_seen = 1 }
     /^CERTIFICATE_AGENT_TIMEOUT=/ { certificate_agent_timeout_seen = 1 }
@@ -197,6 +222,7 @@ else
     END {
       if (!http_updated) print "HTTP_ADDR=127.0.0.1:10001"
       if (!retention_seen) print "RETENTION_DAYS=60"
+      if (!certificate_domains_file_seen) print "CERTIFICATE_DOMAINS_FILE=certificate_domains.json"
       if (!certificate_agent_urls_seen) print "CERTIFICATE_AGENT_URLS="
       if (!certificate_agent_token_seen) print "CERTIFICATE_AGENT_TOKEN="
       if (!certificate_agent_timeout_seen) print "CERTIFICATE_AGENT_TIMEOUT=15s"
@@ -252,6 +278,7 @@ fi
 log "Installation complete"
 printf 'Source:  %s\n' "$INSTALL_DIR"
 printf 'Domains: %s/domains.json\n' "$INSTALL_DIR"
+printf 'Certificate domains: %s/certificate_domains.json\n' "$INSTALL_DIR"
 printf 'Config:  %s/.env\n' "$INSTALL_DIR"
 if [ -n "$LEGACY_BACKUP" ]; then
   printf 'Backup:  %s\n' "$LEGACY_BACKUP"

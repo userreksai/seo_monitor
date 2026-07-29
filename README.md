@@ -128,7 +128,12 @@ RETENTION_DAYS=60
 
 ### 域名文件
 
-服务默认读取当前工作目录的 `domains.json`。systemd 的工作目录为 `/usr/local/seo_monitor`，所以对应完整路径是 `/usr/local/seo_monitor/domains.json`。一键安装脚本会在文件不存在时从 `domains.example.json` 创建它，并在以后更新代码时保留服务器已有列表。推荐使用标准 JSON 数组：
+权重采集和证书检测分别读取独立文件：
+
+- 权重：`/usr/local/seo_monitor/domains.json`
+- 证书：`/usr/local/seo_monitor/certificate_domains.json`
+
+systemd 的工作目录为 `/usr/local/seo_monitor`。一键安装脚本会保留服务器已有的两份列表；旧版本首次升级且尚无证书文件时，会复制当前 `domains.json` 作为初始 `certificate_domains.json`，因此升级不会漏掉原有证书域名。之后两份文件可以独立修改。推荐使用标准 JSON 数组：
 
 ```json
 [
@@ -139,12 +144,13 @@ RETENTION_DAYS=60
 ]
 ```
 
-也支持对象格式 `{"domains":["123.com","222.com"]}`，以及兼容未加引号、带尾逗号的宽松格式。服务启动时导入一次，每天定时任务开始前会再次读取；新域名自动写入 MongoDB 并进入采集队列。重复域名会被忽略，非法域名会让程序明确报错。
+两份文件都支持对象格式 `{"domains":["123.com","222.com"]}`，以及兼容未加引号、带尾逗号的宽松格式。权重文件在服务启动和每天定时采集前读取；证书文件在服务启动及每次证书检测前读取。重复域名会被忽略，非法域名会让程序明确报错。
 
-该文件执行增量导入，从文件删除域名不会删除历史数据；需要停用时使用域名 CRUD API。可通过环境变量指定其他文件，相对路径仍以程序当前工作目录为基准：
+权重文件执行增量导入，从文件删除域名不会删除历史数据；需要停用权重采集时使用域名 CRUD API。证书文件则是证书页面和检测任务的当前完整名单，从中删除域名会停止后续证书检测，但不会删除历史证书记录。可通过环境变量分别指定其他文件，相对路径仍以程序当前工作目录为基准：
 
 ```dotenv
 DOMAINS_FILE=domains.json
+CERTIFICATE_DOMAINS_FILE=certificate_domains.json
 ```
 
 默认只有一个采集 Worker，每次请求随机间隔 3–8 秒。即使域名扩到几百个，也建议先保持低并发，避免给来源站造成压力或触发限流。
@@ -155,7 +161,7 @@ DOMAINS_FILE=domains.json
 
 ### 一键安装或更新（推荐）
 
-下面的完整脚本会拉取 `main` 到 `/usr/local/seo_monitor`、保留已有 `domains.json` 和 `.env`（缺少时补入 `RETENTION_DAYS=60`）、初始化 MongoDB、测试编译、安装 systemd 服务、启动并检查健康状态：
+下面的完整脚本会拉取 `main` 到 `/usr/local/seo_monitor`、保留已有 `domains.json`、`certificate_domains.json` 和 `.env`（缺少时补入必要默认项）、初始化 MongoDB、测试编译、安装 systemd 服务、启动并检查健康状态：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/userreksai/seo_monitor/main/install.sh \
@@ -172,7 +178,7 @@ sudo env \
   sh /tmp/install-seo-monitor.sh
 ```
 
-如果 `/usr/local/seo_monitor` 只有 `domains.json`、`.env`，或者是以前手动上传且尚未包含 `.git` 的项目源码，脚本会把整个旧目录保存为 `/usr/local/seo_monitor.backup.YYYYMMDDHHMMSS`，克隆正式仓库，并自动迁移旧 `.env` 与 `domains.json`；不会直接覆盖或删除旧文件。目录出现不属于项目的未知文件时仍会安全停止。
+如果 `/usr/local/seo_monitor` 只有域名 JSON、`.env`，或者是以前手动上传且尚未包含 `.git` 的项目源码，脚本会把整个旧目录保存为 `/usr/local/seo_monitor.backup.YYYYMMDDHHMMSS`，克隆正式仓库，并自动迁移旧配置；不会直接覆盖或删除旧文件。目录出现不属于项目的未知文件时仍会安全停止。
 
 如果已经手动初始化数据库，可以增加 `SKIP_MONGO_INIT=1`。脚本必须以 root 运行，并要求服务器已安装 `git`、`go`、`systemctl`；未跳过数据库初始化时还要求 `mongosh`。首次安装会生成随机 API Token 并写入权限为 `600` 的 `/usr/local/seo_monitor/.env`，后续运行不会覆盖该文件。
 
@@ -185,6 +191,7 @@ sudo chown -R "$USER":seo-monitor /usr/local/seo_monitor
 cd /usr/local/seo_monitor
 # 将本项目全部源码上传到这里后执行：
 [ -f domains.json ] || cp domains.example.json domains.json
+[ -f certificate_domains.json ] || cp certificate_domains.example.json certificate_domains.json
 sh build.sh
 ```
 
@@ -351,6 +358,7 @@ scripts/mongo-init.js        新建 seo_monitor 库、字段校验、索引
 build.sh                     源码测试与编译（可从任意目录调用）
 install.sh                   拉取、初始化、编译并安装 systemd 服务
 domains.example.json         域名列表示例；安装时生成本地 domains.json
+certificate_domains.example.json 证书域名列表示例；安装时生成本地 certificate_domains.json
 scripts/build.sh             兼容入口，转发到根目录 build.sh
 deploy/seo-monitor.service   Linux systemd 服务配置
 ```

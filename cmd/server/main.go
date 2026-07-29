@@ -91,12 +91,14 @@ func main() {
 		created := 0
 		existing := 0
 		for _, domain := range domains {
-			if _, createErr := st.CreateDomain(rootCtx, domain, nil); errors.Is(createErr, store.ErrConflict) {
-				existing++
-			} else if createErr != nil {
+			wasCreated, createErr := st.ActivateMetricDomain(rootCtx, domain)
+			if createErr != nil {
 				return createErr
-			} else {
+			}
+			if wasCreated {
 				created++
+			} else {
+				existing++
 			}
 		}
 		logger.Info("domains file synchronized", "file", cfg.DomainsFile, "total", len(domains), "created", created, "existing", existing)
@@ -104,6 +106,21 @@ func main() {
 	}
 	if err := syncDomainsFile(); err != nil {
 		logger.Error("synchronize domains file", "file", cfg.DomainsFile, "error", err)
+		os.Exit(1)
+	}
+	syncCertificateDomainsFile := func() error {
+		domains, loadErr := domainfile.Load(cfg.CertificateDomainsFile)
+		if loadErr != nil {
+			return loadErr
+		}
+		if syncErr := st.SyncCertificateDomains(rootCtx, domains); syncErr != nil {
+			return syncErr
+		}
+		logger.Info("certificate domains file synchronized", "file", cfg.CertificateDomainsFile, "total", len(domains))
+		return nil
+	}
+	if err := syncCertificateDomainsFile(); err != nil {
+		logger.Error("synchronize certificate domains file", "file", cfg.CertificateDomainsFile, "error", err)
 		os.Exit(1)
 	}
 
@@ -140,7 +157,7 @@ func main() {
 		}
 	}
 	certificateService := certificate.NewService(rootCtx, st,
-		certificateChecker, cfg.CertificateWorkers, location, cfg.CertificateRetentionDays, logger)
+		certificateChecker, cfg.CertificateWorkers, location, cfg.CertificateRetentionDays, cfg.CertificateDomainsFile, logger)
 	certificateService.RefreshAsync()
 
 	queueToday := func(requestedBy string) {

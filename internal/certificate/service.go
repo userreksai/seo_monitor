@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"seo-monitor/internal/collector"
+	"seo-monitor/internal/domainfile"
 	"seo-monitor/internal/model"
 	"seo-monitor/internal/store"
 )
@@ -20,16 +21,17 @@ type Service struct {
 	workers       int
 	location      *time.Location
 	retentionDays int
+	domainsFile   string
 	logger        *slog.Logger
 	refreshing    atomic.Bool
 	progressMu    sync.RWMutex
 	progress      model.TaskProgress
 }
 
-func NewService(ctx context.Context, st *store.Store, checker Checker, workers int, location *time.Location, retentionDays int, logger *slog.Logger) *Service {
+func NewService(ctx context.Context, st *store.Store, checker Checker, workers int, location *time.Location, retentionDays int, domainsFile string, logger *slog.Logger) *Service {
 	return &Service{
 		ctx: ctx, store: st, checker: checker, workers: workers,
-		location: location, retentionDays: retentionDays, logger: logger,
+		location: location, retentionDays: retentionDays, domainsFile: domainsFile, logger: logger,
 	}
 }
 
@@ -59,7 +61,16 @@ func (s *Service) Progress() model.TaskProgress {
 }
 
 func (s *Service) refreshAll(ctx context.Context) {
-	domains, err := s.store.ListDomains(ctx, false)
+	configuredDomains, err := domainfile.Load(s.domainsFile)
+	if err != nil {
+		s.logger.Error("load certificate domains file", "file", s.domainsFile, "error", err)
+		return
+	}
+	if err := s.store.SyncCertificateDomains(ctx, configuredDomains); err != nil {
+		s.logger.Error("synchronize certificate domains file", "file", s.domainsFile, "error", err)
+		return
+	}
+	domains, err := s.store.ListCertificateDomains(ctx)
 	if err != nil {
 		s.logger.Error("list domains for certificate refresh", "error", err)
 		return

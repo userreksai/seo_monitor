@@ -100,6 +100,7 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 	_, err := s.domains.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "domain", Value: 1}}, Options: options.Index().SetName("uq_domains_domain").SetUnique(true)},
 		{Keys: bson.D{{Key: "active", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("ix_domains_active_created")},
+		{Keys: bson.D{{Key: "certificate_active", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("ix_domains_certificate_active_created")},
 	})
 	if err != nil {
 		return fmt.Errorf("create domain indexes: %w", err)
@@ -161,6 +162,60 @@ func (s *Store) CreateDomain(ctx context.Context, domain string, displayName *st
 		return model.Domain{}, err
 	}
 	return item, nil
+}
+
+// ActivateMetricDomain makes a file-configured domain available to metric
+// collection. It also reactivates a certificate-only record when the same
+// hostname is later added to the metric domains file.
+func (s *Store) ActivateMetricDomain(ctx context.Context, domain string) (bool, error) {
+	now := time.Now().UTC()
+	result, err := s.domains.UpdateOne(ctx, bson.M{"domain": domain}, bson.M{
+		"$set":   bson.M{"active": true, "updated_at": now},
+		"$unset": bson.M{"archived_at": ""},
+		"$setOnInsert": bson.M{
+			"_id": primitive.NewObjectID(), "domain": domain, "created_at": now,
+		},
+	}, options.Update().SetUpsert(true))
+	if err != nil {
+		return false, err
+	}
+	return result.UpsertedCount > 0, nil
+}
+
+// SyncCertificateDomains replaces certificate membership with the supplied
+// file contents without changing metric collection membership.
+func (s *Store) SyncCertificateDomains(ctx context.Context, domains []string) error {
+	now := time.Now().UTC()
+	if _, err := s.domains.UpdateMany(ctx, bson.M{"certificate_active": true}, bson.M{
+		"$set": bson.M{"certificate_active": false, "updated_at": now},
+	}); err != nil {
+		return err
+	}
+	for _, domain := range domains {
+		if _, err := s.domains.UpdateOne(ctx, bson.M{"domain": domain}, bson.M{
+			"$set": bson.M{"certificate_active": true, "updated_at": now},
+			"$setOnInsert": bson.M{
+				"_id": primitive.NewObjectID(), "domain": domain, "active": false, "created_at": now,
+			},
+		}, options.Update().SetUpsert(true)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ListCertificateDomains(ctx context.Context) ([]model.Domain, error) {
+	cursor, err := s.domains.Find(ctx, bson.M{"certificate_active": true},
+		options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}))
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	var items []model.Domain
+	if err := cursor.All(ctx, &items); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 func (s *Store) ListDomains(ctx context.Context, includeArchived bool) ([]model.Domain, error) {
@@ -535,7 +590,7 @@ func certificateSuccessRetentionCutoff(cutoff, latestSuccess time.Time, retentio
 	return cutoff
 }
 
-// ListCertificates returns active domains joined with their latest certificate
+// ListCertificates returns certificate-configured domains joined with their latest certificate
 // check. Summary counts cover the complete query result before the optional
 // status filter is applied, so dashboard cards remain independent of paging.
 func (s *Store) ListCertificates(ctx context.Context, query, status string, page, limit int64) ([]model.LatestCertificate, int64, model.CertificateSummary, error) {
@@ -551,7 +606,7 @@ func (s *Store) ListCertificates(ctx context.Context, query, status string, page
 		return nil, 0, model.CertificateSummary{}, err
 	}
 
-	match := bson.M{"active": true}
+	match := bson.M{"certificate_active": true}
 	if query = strings.TrimSpace(query); query != "" {
 		pattern := primitive.Regex{Pattern: regexp.QuoteMeta(query), Options: "i"}
 		match["$or"] = bson.A{
@@ -577,6 +632,7 @@ func (s *Store) ListCertificates(ctx context.Context, query, status string, page
 				{Key: "domain", Value: "$domain"},
 				{Key: "display_name", Value: "$display_name"},
 				{Key: "active", Value: "$active"},
+				{Key: "certificate_active", Value: "$certificate_active"},
 				{Key: "created_at", Value: "$created_at"},
 				{Key: "updated_at", Value: "$updated_at"},
 				{Key: "archived_at", Value: "$archived_at"},
