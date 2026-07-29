@@ -25,6 +25,7 @@ ensureCollection("domains", {
     domain: { bsonType: "string", description: "小写、去协议后的域名" },
     display_name: { bsonType: "string" },
     active: { bsonType: "bool" },
+    certificate_active: { bsonType: "bool" },
     created_at: { bsonType: "date" },
     updated_at: { bsonType: "date" },
     archived_at: { bsonType: "date" },
@@ -137,6 +138,10 @@ db.domains.createIndex(
 db.domains.createIndex(
   { active: 1, created_at: -1 },
   { name: "ix_domains_active_created" }
+);
+db.domains.createIndex(
+  { certificate_active: 1, created_at: -1 },
+  { name: "ix_domains_certificate_active_created" }
 );
 
 // 核心唯一值：同一域名在同一个采集日只能有一份快照。

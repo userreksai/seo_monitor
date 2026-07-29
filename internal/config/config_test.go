@@ -19,3 +19,14 @@ func TestCertificateRetentionDaysRejectsZero(t *testing.T) {
 		t.Fatal("expected invalid certificate retention error")
 	}
 }
+
+func TestCertificateDomainsFile(t *testing.T) {
+	t.Setenv("CERTIFICATE_DOMAINS_FILE", "certificates.json")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CertificateDomainsFile != "certificates.json" {
+		t.Fatalf("CertificateDomainsFile = %q, want certificates.json", cfg.CertificateDomainsFile)
+	}
+}

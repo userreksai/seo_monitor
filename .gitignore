@@ -3,3 +3,4 @@ bin/
 coverage.out
 *.log
 domains.json
+certificate_domains.json

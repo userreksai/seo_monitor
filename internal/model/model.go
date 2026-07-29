@@ -9,13 +9,14 @@ import (
 // Domain is a monitored hostname. Deleting a domain through the API archives it
 // so that historical metrics remain queryable.
 type Domain struct {
-	ID          primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	Domain      string             `bson:"domain" json:"domain"`
-	DisplayName *string            `bson:"display_name,omitempty" json:"display_name,omitempty"`
-	Active      bool               `bson:"active" json:"active"`
-	CreatedAt   time.Time          `bson:"created_at" json:"created_at"`
-	UpdatedAt   time.Time          `bson:"updated_at" json:"updated_at"`
-	ArchivedAt  *time.Time         `bson:"archived_at,omitempty" json:"archived_at,omitempty"`
+	ID                primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	Domain            string             `bson:"domain" json:"domain"`
+	DisplayName       *string            `bson:"display_name,omitempty" json:"display_name,omitempty"`
+	Active            bool               `bson:"active" json:"active"`
+	CertificateActive bool               `bson:"certificate_active,omitempty" json:"certificate_active,omitempty"`
+	CreatedAt         time.Time          `bson:"created_at" json:"created_at"`
+	UpdatedAt         time.Time          `bson:"updated_at" json:"updated_at"`
+	ArchivedAt        *time.Time         `bson:"archived_at,omitempty" json:"archived_at,omitempty"`
 }
 
 type DomainPatch struct {
