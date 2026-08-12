@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	minPasswordBytes = 12
-	maxPasswordBytes = 72
+	minPasswordBytes       = 12
+	forcedMinPasswordBytes = 8
+	maxPasswordBytes       = 72
 )
 
 var ErrInvalidPassword = errors.New("invalid password")
@@ -24,11 +25,26 @@ var ErrInvalidPassword = errors.New("invalid password")
 // SetUserPassword resets an account password and revokes all of its sessions.
 // It is intended for trusted local administration tools, not HTTP handlers.
 func (s *Store) SetUserPassword(ctx context.Context, username, newPassword string) error {
+	return s.setUserPassword(ctx, username, newPassword, false)
+}
+
+// SetUserPasswordAllowWeak resets an account password using the deliberately
+// weaker local-administration policy. Callers must require an explicit opt-in;
+// browser password changes must continue to use the normal policy.
+func (s *Store) SetUserPasswordAllowWeak(ctx context.Context, username, newPassword string) error {
+	return s.setUserPassword(ctx, username, newPassword, true)
+}
+
+func (s *Store) setUserPassword(ctx context.Context, username, newPassword string, allowWeak bool) error {
 	username = normalizeUsername(username)
 	if username == "" {
 		return errors.New("username is required")
 	}
-	if err := validateNewPassword(newPassword); err != nil {
+	minimumBytes := minPasswordBytes
+	if allowWeak {
+		minimumBytes = forcedMinPasswordBytes
+	}
+	if err := validatePassword(newPassword, minimumBytes); err != nil {
 		return err
 	}
 
@@ -60,12 +76,16 @@ func (s *Store) SetUserPassword(ctx context.Context, username, newPassword strin
 }
 
 func validateNewPassword(password string) error {
+	return validatePassword(password, minPasswordBytes)
+}
+
+func validatePassword(password string, minimumBytes int) error {
 	if strings.ContainsAny(password, "\r\n") {
 		return fmt.Errorf("%w: password cannot contain a line break", ErrInvalidPassword)
 	}
 	passwordBytes := len([]byte(password))
-	if passwordBytes < minPasswordBytes {
-		return fmt.Errorf("%w: password must contain at least %d bytes", ErrInvalidPassword, minPasswordBytes)
+	if passwordBytes < minimumBytes {
+		return fmt.Errorf("%w: password must contain at least %d bytes", ErrInvalidPassword, minimumBytes)
 	}
 	if passwordBytes > maxPasswordBytes {
 		return fmt.Errorf("%w: password must contain at most %d bytes", ErrInvalidPassword, maxPasswordBytes)

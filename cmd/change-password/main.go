@@ -18,6 +18,7 @@ const operationTimeout = 30 * time.Second
 
 func main() {
 	username := flag.String("username", "admin", "account whose password will be reset")
+	allowWeakPassword := flag.Bool("allow-weak-password", false, "explicitly allow an 8-11 byte password (unsafe for public deployments)")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fatalf("unexpected positional arguments")
@@ -50,11 +51,18 @@ func main() {
 		_ = databaseStore.Close(closeCtx)
 	}()
 
-	if err := databaseStore.SetUserPassword(ctx, *username, password); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+	var resetErr error
+	if *allowWeakPassword {
+		fmt.Fprintln(os.Stderr, "WARNING: weak-password override enabled; public accounts remain vulnerable to guessing attacks.")
+		resetErr = databaseStore.SetUserPasswordAllowWeak(ctx, *username, password)
+	} else {
+		resetErr = databaseStore.SetUserPassword(ctx, *username, password)
+	}
+	if resetErr != nil {
+		if errors.Is(resetErr, store.ErrNotFound) {
 			fatalf("user %q does not exist", *username)
 		}
-		fatalf("reset password: %v", err)
+		fatalf("reset password: %v", resetErr)
 	}
 	fmt.Printf("Password updated for user %q; all existing sessions were revoked.\n", strings.ToLower(strings.TrimSpace(*username)))
 }
