@@ -109,7 +109,8 @@ Copy-Item .env.example .env
 ```dotenv
 MONGODB_URI=mongodb://seo_monitor_app:密码@127.0.0.1:27017/seo_monitor?authSource=seo_monitor
 MONGODB_DATABASE=seo_monitor
-API_TOKEN=一段足够长的随机字符串
+# 不需要脚本调用时留空；启用时至少使用 32 字节随机值并定期轮换。
+API_TOKEN=
 DEFAULT_ADMIN_USERNAME=admin
 DEFAULT_ADMIN_PASSWORD=请替换为随机生成的强密码
 AUTH_SESSION_TTL=8h
@@ -166,7 +167,7 @@ CERTIFICATE_DOMAINS_FILE=certificate_domains.json
 
 ## 三、服务器源码部署（不使用 Docker）
 
-以下以 Ubuntu/Debian Linux 为例。服务器需安装 Go 1.23 或更高版本、`mongosh`，MongoDB 可以在本机或内网另一台服务器。
+以下以 Ubuntu/Debian Linux 为例。服务器需安装 Go 1.25 或更高版本、`mongosh`，MongoDB 可以在本机或内网另一台服务器。
 
 ### 一键安装或更新（推荐）
 

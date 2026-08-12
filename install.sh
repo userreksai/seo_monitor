@@ -160,7 +160,9 @@ fi
 
 log "Preparing application environment"
 if [ ! -f "$INSTALL_DIR/.env" ]; then
-  APP_API_TOKEN=${API_TOKEN:-$(generate_token)}
+  # Browser login is the default. Enable the all-powerful automation token
+  # only when an operator explicitly provides a sufficiently long value.
+  APP_API_TOKEN=${API_TOKEN:-}
   if [ -n "${DEFAULT_ADMIN_PASSWORD:-}" ]; then
     APP_ADMIN_PASSWORD=$DEFAULT_ADMIN_PASSWORD
   else
@@ -208,7 +210,7 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     printf 'CERTIFICATE_AGENT_TIMEOUT=15s\n'
     printf 'CERTIFICATE_AGENT_MAX_CONCURRENT=4\n'
   } >"$INSTALL_DIR/.env"
-  log "Created $INSTALL_DIR/.env with a generated API token"
+  log "Created $INSTALL_DIR/.env; API token authentication is disabled unless API_TOKEN was supplied"
 else
   APP_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-$(generate_token)}
   if ! grep -q '^DEFAULT_ADMIN_PASSWORD=.' "$INSTALL_DIR/.env"; then

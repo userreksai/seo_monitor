@@ -83,3 +83,22 @@ func TestDefaultPasswordRejectsBcryptOverflow(t *testing.T) {
 		t.Fatalf("expected bcrypt length error, got %v", err)
 	}
 }
+
+func TestDefaultPasswordRequiresTwelveBytes(t *testing.T) {
+	t.Setenv("DEFAULT_ADMIN_PASSWORD", "short-pass")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "12") {
+		t.Fatalf("expected minimum password length error, got %v", err)
+	}
+}
+
+func TestAPITokenRequiresThirtyTwoBytesWhenEnabled(t *testing.T) {
+	t.Setenv("API_TOKEN", "short-token")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "API_TOKEN") {
+		t.Fatalf("expected API token length error, got %v", err)
+	}
+
+	t.Setenv("API_TOKEN", "")
+	if _, err := Load(); err != nil {
+		t.Fatalf("disabled API token should be accepted: %v", err)
+	}
+}

@@ -106,11 +106,14 @@ func Load() (Config, error) {
 	if strings.TrimSpace(cfg.DefaultAdminUsername) == "" {
 		return Config{}, fmt.Errorf("DEFAULT_ADMIN_USERNAME 不能为空")
 	}
-	if len(cfg.DefaultAdminPassword) < 8 {
-		return Config{}, fmt.Errorf("DEFAULT_ADMIN_PASSWORD 至少需要 8 字节")
+	if len(cfg.DefaultAdminPassword) < 12 {
+		return Config{}, fmt.Errorf("DEFAULT_ADMIN_PASSWORD 至少需要 12 字节")
 	}
 	if len(cfg.DefaultAdminPassword) > 72 {
 		return Config{}, fmt.Errorf("DEFAULT_ADMIN_PASSWORD 不能超过 72 字节（bcrypt 限制）")
+	}
+	if cfg.APIToken != "" && len(cfg.APIToken) < 32 {
+		return Config{}, fmt.Errorf("API_TOKEN 启用时至少需要 32 字节；不使用时请留空")
 	}
 	if cfg.AuthSessionTTL < 5*time.Minute || cfg.AuthSessionTTL > 30*24*time.Hour {
 		return Config{}, fmt.Errorf("AUTH_SESSION_TTL 必须在 5 分钟到 30 天之间")
