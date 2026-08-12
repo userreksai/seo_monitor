@@ -26,6 +26,29 @@ type DomainPatch struct {
 	HasActive      bool
 }
 
+// User is an application account. PasswordHash is intentionally never exposed
+// through JSON responses.
+type User struct {
+	ID           primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	Username     string             `bson:"username" json:"username"`
+	PasswordHash string             `bson:"password_hash" json:"-"`
+	Role         string             `bson:"role" json:"role"`
+	Active       bool               `bson:"active" json:"active"`
+	CreatedAt    time.Time          `bson:"created_at" json:"created_at"`
+	UpdatedAt    time.Time          `bson:"updated_at" json:"updated_at"`
+	LastLoginAt  *time.Time         `bson:"last_login_at,omitempty" json:"last_login_at,omitempty"`
+}
+
+// AuthSession stores only a digest of the bearer token. A database leak cannot
+// therefore be used to replay active browser sessions directly.
+type AuthSession struct {
+	ID        primitive.ObjectID `bson:"_id,omitempty"`
+	UserID    primitive.ObjectID `bson:"user_id"`
+	TokenHash string             `bson:"token_hash"`
+	CreatedAt time.Time          `bson:"created_at"`
+	ExpiresAt time.Time          `bson:"expires_at"`
+}
+
 // Metric is the once-per-day snapshot. Pointers preserve the distinction
 // between a real zero and a value that the source did not return.
 type Metric struct {

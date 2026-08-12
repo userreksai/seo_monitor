@@ -15,6 +15,9 @@ type Config struct {
 	CertificateDomainsFile      string
 	HTTPAddr                    string
 	APIToken                    string
+	DefaultAdminUsername        string
+	DefaultAdminPassword        string
+	AuthSessionTTL              time.Duration
 	AllowedOrigins              []string
 	EnsureIndexes               bool
 	SourceBaseURL               string
@@ -50,6 +53,9 @@ func Load() (Config, error) {
 		CertificateDomainsFile:      env("CERTIFICATE_DOMAINS_FILE", "certificate_domains.json"),
 		HTTPAddr:                    env("HTTP_ADDR", "127.0.0.1:10001"),
 		APIToken:                    os.Getenv("API_TOKEN"),
+		DefaultAdminUsername:        env("DEFAULT_ADMIN_USERNAME", "admin"),
+		DefaultAdminPassword:        env("DEFAULT_ADMIN_PASSWORD", "admin1818"),
+		AuthSessionTTL:              envDuration("AUTH_SESSION_TTL", 24*time.Hour),
 		AllowedOrigins:              splitCSV(os.Getenv("CORS_ALLOWED_ORIGINS")),
 		EnsureIndexes:               envBool("ENSURE_INDEXES", true),
 		SourceBaseURL:               env("SOURCE_BASE_URL", "https://seo.chinaz.com"),
@@ -79,6 +85,15 @@ func Load() (Config, error) {
 
 	if cfg.WorkerCount < 1 || cfg.WorkerCount > 4 {
 		return Config{}, fmt.Errorf("WORKER_COUNT 必须在 1 到 4 之间")
+	}
+	if strings.TrimSpace(cfg.DefaultAdminUsername) == "" {
+		return Config{}, fmt.Errorf("DEFAULT_ADMIN_USERNAME 不能为空")
+	}
+	if len(cfg.DefaultAdminPassword) < 8 {
+		return Config{}, fmt.Errorf("DEFAULT_ADMIN_PASSWORD 至少需要 8 个字符")
+	}
+	if cfg.AuthSessionTTL < 5*time.Minute || cfg.AuthSessionTTL > 30*24*time.Hour {
+		return Config{}, fmt.Errorf("AUTH_SESSION_TTL 必须在 5 分钟到 30 天之间")
 	}
 	if cfg.ScrapeRetries < 1 || cfg.ScrapeRetries > 10 {
 		return Config{}, fmt.Errorf("SCRAPE_RETRIES 必须在 1 到 10 之间")

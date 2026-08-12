@@ -110,6 +110,9 @@ Copy-Item .env.example .env
 MONGODB_URI=mongodb://seo_monitor_app:密码@127.0.0.1:27017/seo_monitor?authSource=seo_monitor
 MONGODB_DATABASE=seo_monitor
 API_TOKEN=一段足够长的随机字符串
+DEFAULT_ADMIN_USERNAME=admin
+DEFAULT_ADMIN_PASSWORD=admin1818
+AUTH_SESSION_TTL=24h
 ```
 
 默认每天北京时间 `02:15` 排队采集，应用启动时会补采当天尚未成功的域名：
@@ -180,7 +183,7 @@ sudo env \
 
 如果 `/usr/local/seo_monitor` 只有域名 JSON、`.env`，或者是以前手动上传且尚未包含 `.git` 的项目源码，脚本会把整个旧目录保存为 `/usr/local/seo_monitor.backup.YYYYMMDDHHMMSS`，克隆正式仓库，并自动迁移旧配置；不会直接覆盖或删除旧文件。目录出现不属于项目的未知文件时仍会安全停止。
 
-如果已经手动初始化数据库，可以增加 `SKIP_MONGO_INIT=1`。脚本必须以 root 运行，并要求服务器已安装 `git`、`go`、`systemctl`；未跳过数据库初始化时还要求 `mongosh`。首次安装会生成随机 API Token 并写入权限为 `600` 的 `/usr/local/seo_monitor/.env`，后续运行不会覆盖该文件。
+如果已经手动初始化数据库，可以增加 `SKIP_MONGO_INIT=1`。即使跳过 `mongo-init.js`，Go 服务启动时仍会自动创建 `users`、`auth_sessions` 集合、所需索引以及默认管理员 `admin / admin1818`；已存在的管理员不会在重启时被覆盖。脚本必须以 root 运行，并要求服务器已安装 `git`、`go`、`systemctl`；未跳过数据库初始化时还要求 `mongosh`。首次安装会生成随机 API Token 并写入权限为 `600` 的 `/usr/local/seo_monitor/.env`，后续运行不会覆盖该文件。
 
 ### 1. 上传源码并编译
 
@@ -265,14 +268,17 @@ $env:API_TOKEN="你的随机令牌"
 设置公共请求头：
 
 ```text
-Authorization: Bearer <API_TOKEN>
+Authorization: Bearer <API_TOKEN 或登录返回的 token>
 Content-Type: application/json
 ```
 
 主要接口：
 
 | 方法 | 路径 | 说明 |
-| --- | --- | --- |
+|---|---|---|
+| `POST` | `/api/v1/auth/login` | 账号密码登录（无需 Token） |
+| `GET` | `/api/v1/auth/me` | 获取当前登录账号 |
+| `POST` | `/api/v1/auth/logout` | 退出并注销当前会话 |
 | `POST` | `/api/v1/domains` | 新增域名 |
 | `POST` | `/api/v1/domains/bulk` | 批量新增，最多 1000 个 |
 | `GET` | `/api/v1/domains` | 域名列表 |

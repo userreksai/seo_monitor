@@ -131,6 +131,35 @@ ensureCollection("domain_certificate_history", {
   },
 });
 
+ensureCollection("users", {
+  bsonType: "object",
+  title: "Application user",
+  required: ["username", "password_hash", "role", "active", "created_at", "updated_at"],
+  properties: {
+    _id: { bsonType: "objectId" },
+    username: { bsonType: "string", minLength: 1, maxLength: 100 },
+    password_hash: { bsonType: "string", description: "bcrypt password hash" },
+    role: { bsonType: "string" },
+    active: { bsonType: "bool" },
+    created_at: { bsonType: "date" },
+    updated_at: { bsonType: "date" },
+    last_login_at: { bsonType: "date" },
+  },
+});
+
+ensureCollection("auth_sessions", {
+  bsonType: "object",
+  title: "Application login session",
+  required: ["user_id", "token_hash", "created_at", "expires_at"],
+  properties: {
+    _id: { bsonType: "objectId" },
+    user_id: { bsonType: "objectId" },
+    token_hash: { bsonType: "string", pattern: "^[a-f0-9]{64}$" },
+    created_at: { bsonType: "date" },
+    expires_at: { bsonType: "date" },
+  },
+});
+
 db.domains.createIndex(
   { domain: 1 },
   { name: "uq_domains_domain", unique: true }
@@ -205,4 +234,21 @@ db.domain_certificate_history.createIndex(
   { name: "ix_certificate_history_domain_checked" }
 );
 
-print("seo_monitor database, validators, and indexes are ready.");
+db.users.createIndex(
+  { username: 1 },
+  { name: "uq_users_username", unique: true }
+);
+db.auth_sessions.createIndex(
+  { token_hash: 1 },
+  { name: "uq_auth_sessions_token", unique: true }
+);
+db.auth_sessions.createIndex(
+  { expires_at: 1 },
+  { name: "ttl_auth_sessions_expiry", expireAfterSeconds: 0 }
+);
+db.auth_sessions.createIndex(
+  { user_id: 1 },
+  { name: "ix_auth_sessions_user" }
+);
+
+print("seo_monitor database, validators, and indexes are ready; the Go service creates the default admin on startup.");

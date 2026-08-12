@@ -78,6 +78,15 @@ func main() {
 	}
 	cleanupExpiredData("startup")
 
+	authCtx, authCancel := context.WithTimeout(rootCtx, 30*time.Second)
+	err = st.InitializeAuth(authCtx, cfg.DefaultAdminUsername, cfg.DefaultAdminPassword)
+	authCancel()
+	if err != nil {
+		logger.Error("initialize authentication data", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("authentication data ready", "default_username", cfg.DefaultAdminUsername)
+
 	syncDomainsFile := func() error {
 		domains, loadErr := domainfile.Load(cfg.DomainsFile)
 		if errors.Is(loadErr, os.ErrNotExist) {
@@ -194,7 +203,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.New(st, certificateService, location, cfg.APIToken, cfg.AllowedOrigins, logger),
+		Handler:           httpapi.New(st, certificateService, location, cfg.APIToken, cfg.AuthSessionTTL, cfg.AllowedOrigins, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

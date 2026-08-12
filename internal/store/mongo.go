@@ -2,6 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -14,6 +17,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
+	"golang.org/x/crypto/bcrypt"
 
 	"seo-monitor/internal/model"
 )
@@ -57,6 +61,8 @@ type Store struct {
 	jobs               *mongo.Collection
 	certificates       *mongo.Collection
 	certificateHistory *mongo.Collection
+	users              *mongo.Collection
+	sessions           *mongo.Collection
 }
 
 // CleanupResult reports how many records were removed from each retained collection.
@@ -83,6 +89,8 @@ func New(ctx context.Context, uri, database string) (*Store, error) {
 		jobs:               db.Collection("collection_jobs"),
 		certificates:       db.Collection("domain_certificates"),
 		certificateHistory: db.Collection("domain_certificate_history"),
+		users:              db.Collection("users"),
+		sessions:           db.Collection("auth_sessions"),
 	}, nil
 }
 
@@ -144,6 +152,131 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 	}
 	return nil
 }
+
+// InitializeAuth is safe to run at every startup. It creates the authentication
+// indexes and inserts the default administrator only when that username does not
+// already exist; subsequent restarts never reset a changed password.
+func (s *Store) InitializeAuth(ctx context.Context, username, password string) error {
+	username = normalizeUsername(username)
+	if username == "" || password == "" {
+		return errors.New("default administrator username and password are required")
+	}
+	if _, err := s.users.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "username", Value: 1}},
+		Options: options.Index().SetName("uq_users_username").SetUnique(true),
+	}); err != nil {
+		return fmt.Errorf("create user index: %w", err)
+	}
+	if _, err := s.sessions.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "token_hash", Value: 1}}, Options: options.Index().SetName("uq_auth_sessions_token").SetUnique(true)},
+		{Keys: bson.D{{Key: "expires_at", Value: 1}}, Options: options.Index().SetName("ttl_auth_sessions_expiry").SetExpireAfterSeconds(0)},
+		{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: options.Index().SetName("ix_auth_sessions_user")},
+	}); err != nil {
+		return fmt.Errorf("create auth session indexes: %w", err)
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hash default administrator password: %w", err)
+	}
+	now := time.Now().UTC()
+	result, err := s.users.UpdateOne(ctx, bson.M{"username": username}, bson.M{"$setOnInsert": model.User{
+		ID: primitive.NewObjectID(), Username: username, PasswordHash: string(hash), Role: "admin",
+		Active: true, CreatedAt: now, UpdatedAt: now,
+	}}, options.Update().SetUpsert(true))
+	if err != nil {
+		return fmt.Errorf("initialize default administrator: %w", err)
+	}
+	_ = result
+	return nil
+}
+
+func (s *Store) AuthenticateUser(ctx context.Context, username, password string) (model.User, error) {
+	username = normalizeUsername(username)
+	var user model.User
+	err := s.users.FindOne(ctx, bson.M{"username": username, "active": true}).Decode(&user)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(password))
+		return model.User{}, ErrNotFound
+	}
+	if err != nil {
+		return model.User{}, err
+	}
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
+		return model.User{}, ErrNotFound
+	}
+	now := time.Now().UTC()
+	if _, err := s.users.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{
+		"last_login_at": now, "updated_at": now,
+	}}); err != nil {
+		return model.User{}, err
+	}
+	user.LastLoginAt = &now
+	user.UpdatedAt = now
+	return user, nil
+}
+
+func (s *Store) CreateSession(ctx context.Context, userID primitive.ObjectID, ttl time.Duration) (string, time.Time, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", time.Time{}, fmt.Errorf("generate session token: %w", err)
+	}
+	token := hex.EncodeToString(raw)
+	now := time.Now().UTC()
+	expiresAt := now.Add(ttl)
+	_, err := s.sessions.InsertOne(ctx, model.AuthSession{
+		ID: primitive.NewObjectID(), UserID: userID, TokenHash: tokenDigest(token),
+		CreatedAt: now, ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return token, expiresAt, nil
+}
+
+func (s *Store) AuthenticateSession(ctx context.Context, token string) (model.User, error) {
+	if len(token) != 64 {
+		return model.User{}, ErrNotFound
+	}
+	var session model.AuthSession
+	err := s.sessions.FindOne(ctx, bson.M{
+		"token_hash": tokenDigest(token), "expires_at": bson.M{"$gt": time.Now().UTC()},
+	}).Decode(&session)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return model.User{}, ErrNotFound
+	}
+	if err != nil {
+		return model.User{}, err
+	}
+	var user model.User
+	err = s.users.FindOne(ctx, bson.M{"_id": session.UserID, "active": true}).Decode(&user)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return model.User{}, ErrNotFound
+	}
+	return user, err
+}
+
+func (s *Store) DeleteSession(ctx context.Context, token string) error {
+	if token == "" {
+		return nil
+	}
+	_, err := s.sessions.DeleteOne(ctx, bson.M{"token_hash": tokenDigest(token)})
+	return err
+}
+
+func normalizeUsername(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func tokenDigest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+var dummyPasswordHash = func() []byte {
+	hash, _ := bcrypt.GenerateFromPassword([]byte("invalid-password-placeholder"), bcrypt.DefaultCost)
+	return hash
+}()
 
 func (s *Store) CreateDomain(ctx context.Context, domain string, displayName *string) (model.Domain, error) {
 	now := time.Now().UTC()
