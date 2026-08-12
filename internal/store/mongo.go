@@ -1018,12 +1018,16 @@ func (s *Store) CollectionProgress(ctx context.Context, snapshotDate time.Time) 
 // SearchLatest returns active domains with their newest metric snapshot. Only
 // fields in latestSearchFields are accepted, preventing arbitrary MongoDB paths
 // from being supplied by API callers.
-func (s *Store) SearchLatest(ctx context.Context, field, query, status string, page, limit int64) ([]model.LatestMetric, int64, error) {
+func (s *Store) SearchLatest(ctx context.Context, field, query, status, sortField, sortOrder string, page, limit int64) ([]model.LatestMetric, int64, error) {
 	match, err := latestSearchMatch(field, query)
 	if err != nil {
 		return nil, 0, err
 	}
 	statusMatch, err := latestCollectionStatusMatch(status)
+	if err != nil {
+		return nil, 0, err
+	}
+	sortValueStage, sortStage, err := latestSortStages(sortField, sortOrder)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1077,8 +1081,11 @@ func (s *Store) SearchLatest(ctx context.Context, field, query, status string, p
 	if len(statusMatch) > 0 {
 		pipeline = append(pipeline, bson.D{{Key: "$match", Value: statusMatch}})
 	}
+	if len(sortValueStage) > 0 {
+		pipeline = append(pipeline, sortValueStage)
+	}
 	pipeline = append(pipeline,
-		bson.D{{Key: "$sort", Value: bson.D{{Key: "domain", Value: 1}}}},
+		sortStage,
 		bson.D{{Key: "$facet", Value: bson.D{
 			{Key: "items", Value: mongo.Pipeline{
 				bson.D{{Key: "$skip", Value: (page - 1) * limit}},
@@ -1126,6 +1133,70 @@ func (s *Store) SearchLatest(ctx context.Context, field, query, status string, p
 		total = result[0].Total[0].Value
 	}
 	return result[0].Items, total, nil
+}
+
+// latestSortStages returns a validated global sort for the paginated latest-data
+// table. Missing values are always placed after collected numeric values.
+func latestSortStages(field, order string) (bson.D, bson.D, error) {
+	field = strings.ToLower(strings.TrimSpace(field))
+	order = strings.ToLower(strings.TrimSpace(order))
+	if field == "" {
+		if order != "" {
+			return nil, nil, fmt.Errorf("%w: sort_order requires sort_by", ErrInvalidSearch)
+		}
+		return nil, bson.D{{Key: "$sort", Value: bson.D{{Key: "domain", Value: 1}}}}, nil
+	}
+
+	direction := 1
+	switch order {
+	case "", "asc":
+	case "desc":
+		direction = -1
+	default:
+		return nil, nil, fmt.Errorf("%w: unsupported sort order %q", ErrInvalidSearch, order)
+	}
+
+	var valueExpression any
+	var hasValueExpression any
+	switch field {
+	case "traffic":
+		valueExpression = "$metric.traffic_max"
+		hasValueExpression = bson.M{"$isNumber": "$metric.traffic_max"}
+	case "rank":
+		valueExpression = "$metric.apppc_pc_rank"
+		hasValueExpression = bson.M{"$isNumber": "$metric.apppc_pc_rank"}
+	case "weight":
+		weightPaths := []string{
+			"$metric.baidu_pc_weight",
+			"$metric.baidu_mobile_weight",
+			"$metric.sogou_weight",
+			"$metric.bing_weight",
+			"$metric.so_360_weight",
+			"$metric.shenma_weight",
+			"$metric.pr_weight",
+		}
+		values := make(bson.A, 0, len(weightPaths))
+		hasValues := make(bson.A, 0, len(weightPaths))
+		for _, path := range weightPaths {
+			values = append(values, bson.M{"$ifNull": bson.A{path, 0}})
+			hasValues = append(hasValues, bson.M{"$isNumber": path})
+		}
+		valueExpression = bson.M{"$add": values}
+		hasValueExpression = bson.M{"$or": hasValues}
+	default:
+		return nil, nil, fmt.Errorf("%w: unsupported sort field %q", ErrInvalidSearch, field)
+	}
+
+	setStage := bson.D{{Key: "$set", Value: bson.D{
+		{Key: "_sort_value", Value: valueExpression},
+		{Key: "_sort_missing", Value: bson.M{"$cond": bson.A{hasValueExpression, 0, 1}}},
+	}}}
+	sortStage := bson.D{{Key: "$sort", Value: bson.D{
+		{Key: "_sort_missing", Value: 1},
+		{Key: "_sort_value", Value: direction},
+		{Key: "domain", Value: 1},
+	}}}
+	return setStage, sortStage, nil
 }
 
 func latestCollectionStatusMatch(status string) (bson.D, error) {

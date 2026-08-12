@@ -327,7 +327,7 @@ Content-Type: application/json
 | `GET` | `/api/v1/collect/progress` | 当天采集进度、成功数和失败数 |
 | `GET` | `/api/v1/domains/{id}/latest` | 最新快照 |
 | `GET` | `/api/v1/domains/{id}/metrics?from=2026-01-01&to=2026-07-10` | 趋势数据 |
-| `GET` | `/api/v1/search?field=domain&q=example&status=failed&page=1&limit=50` | 按指定字段搜索域名及最新指标；`status=failed` 筛选最近采集失败 |
+| `GET` | `/api/v1/search?field=domain&q=example&status=failed&sort_by=traffic&sort_order=asc&page=1&limit=50` | 按指定字段搜索域名及最新指标；`status=failed` 筛选最近采集失败；`sort_by` 支持 `traffic`、`weight`、`rank`，`sort_order` 支持 `asc`、`desc` |
 | `POST` | `/api/v1/certificates/refresh` | 启动全部证书检测 |
 | `GET` | `/api/v1/certificates/progress` | 当前/最近一次证书检测进度 |
 | `GET` | `/api/v1/jobs?status=failed&limit=100` | 任务与错误记录 |

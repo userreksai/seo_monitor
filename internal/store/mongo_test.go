@@ -72,6 +72,69 @@ func TestLatestCollectionStatusMatch(t *testing.T) {
 	}
 }
 
+func TestLatestSortStages(t *testing.T) {
+	tests := []struct {
+		field     string
+		order     string
+		direction int
+	}{
+		{field: "traffic", order: "asc", direction: 1},
+		{field: "weight", order: "desc", direction: -1},
+		{field: "rank", order: "", direction: 1},
+	}
+	for _, test := range tests {
+		setStage, sortStage, err := latestSortStages(test.field, test.order)
+		if err != nil {
+			t.Fatalf("latestSortStages(%q, %q): %v", test.field, test.order, err)
+		}
+		if len(setStage) != 1 || setStage[0].Key != "$set" {
+			t.Fatalf("latestSortStages(%q, %q) set stage = %#v", test.field, test.order, setStage)
+		}
+		if len(sortStage) != 1 || sortStage[0].Key != "$sort" {
+			t.Fatalf("latestSortStages(%q, %q) sort stage = %#v", test.field, test.order, sortStage)
+		}
+		sort, ok := sortStage[0].Value.(bson.D)
+		if !ok || len(sort) != 3 || sort[0] != (bson.E{Key: "_sort_missing", Value: 1}) || sort[1] != (bson.E{Key: "_sort_value", Value: test.direction}) || sort[2] != (bson.E{Key: "domain", Value: 1}) {
+			t.Fatalf("latestSortStages(%q, %q) sort = %#v", test.field, test.order, sortStage[0].Value)
+		}
+	}
+}
+
+func TestLatestSortStagesSumsAllDisplayedWeights(t *testing.T) {
+	setStage, _, err := latestSortStages("weight", "asc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, ok := setStage[0].Value.(bson.D)
+	if !ok || len(set) != 2 || set[0].Key != "_sort_value" {
+		t.Fatalf("unexpected weight set stage: %#v", setStage)
+	}
+	expression, ok := set[0].Value.(bson.M)
+	if !ok {
+		t.Fatalf("weight sort value is not an expression: %#v", set[0].Value)
+	}
+	values, ok := expression["$add"].(bson.A)
+	if !ok || len(values) != 7 {
+		t.Fatalf("weight sort should add all 7 displayed weights, got %#v", expression)
+	}
+}
+
+func TestLatestSortStagesDefaultAndValidation(t *testing.T) {
+	setStage, sortStage, err := latestSortStages("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := bson.D{{Key: "$sort", Value: bson.D{{Key: "domain", Value: 1}}}}
+	if setStage != nil || !reflect.DeepEqual(sortStage, want) {
+		t.Fatalf("default latest sort = (%#v, %#v), want (nil, %#v)", setStage, sortStage, want)
+	}
+	for _, test := range [][2]string{{"unknown", "asc"}, {"traffic", "sideways"}, {"", "desc"}} {
+		if _, _, err := latestSortStages(test[0], test[1]); !errors.Is(err, ErrInvalidSearch) {
+			t.Fatalf("expected invalid sort error for %#v, got %v", test, err)
+		}
+	}
+}
+
 func TestSnapshotDateBeforeFilterKeepsCutoffDate(t *testing.T) {
 	cutoff := time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC)
 	got := snapshotDateBeforeFilter(cutoff)

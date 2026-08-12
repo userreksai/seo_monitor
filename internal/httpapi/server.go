@@ -486,6 +486,8 @@ func (s *Server) searchLatest(w http.ResponseWriter, r *http.Request) {
 	}
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	sortField := strings.TrimSpace(r.URL.Query().Get("sort_by"))
+	sortOrder := strings.TrimSpace(r.URL.Query().Get("sort_order"))
 	page := int64(1)
 	limit := int64(50)
 	if raw := r.URL.Query().Get("page"); raw != "" {
@@ -505,7 +507,7 @@ func (s *Server) searchLatest(w http.ResponseWriter, r *http.Request) {
 		limit = parsed
 	}
 
-	items, total, err := s.store.SearchLatest(r.Context(), field, query, status, page, limit)
+	items, total, err := s.store.SearchLatest(r.Context(), field, query, status, sortField, sortOrder, page, limit)
 	if errors.Is(err, store.ErrInvalidSearch) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -517,6 +519,7 @@ func (s *Server) searchLatest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": items, "count": len(items), "total": total,
 		"page": page, "limit": limit, "field": field, "q": query, "status": status,
+		"sort_by": sortField, "sort_order": sortOrder,
 	})
 }
 
