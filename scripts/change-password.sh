@@ -12,11 +12,29 @@ if [ "$(id -u)" -ne 0 ]; then
   fail "please run this script as root (for example: sudo sh $0)"
 fi
 
-if [ "$#" -gt 1 ]; then
-  fail "usage: sudo sh $0 [username]"
-fi
+ALLOW_WEAK_PASSWORD=0
+USERNAME=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --allow-weak-password)
+      ALLOW_WEAK_PASSWORD=1
+      ;;
+    -h|--help)
+      echo "usage: sudo sh $0 [--allow-weak-password] [username]"
+      exit 0
+      ;;
+    -*)
+      fail "unknown option: $1"
+      ;;
+    *)
+      [ -z "$USERNAME" ] || fail "only one username may be specified"
+      USERNAME=$1
+      ;;
+  esac
+  shift
+done
 
-USERNAME=${1:-admin}
+USERNAME=${USERNAME:-admin}
 [ -n "$USERNAME" ] || fail "username cannot be empty"
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -34,6 +52,9 @@ restore_terminal() {
 
 trap restore_terminal EXIT
 trap 'restore_terminal; exit 1' HUP INT TERM
+if [ "$ALLOW_WEAK_PASSWORD" -eq 1 ]; then
+  echo "WARNING: allowing an 8-11 byte password; this is unsafe for a public account." >&2
+fi
 printf 'New password for %s: ' "$USERNAME" > /dev/tty
 stty -echo < /dev/tty
 if ! IFS= read -r NEW_PASSWORD < /dev/tty; then
@@ -56,5 +77,9 @@ set -a
 . "$ENV_FILE"
 set +a
 
-printf '%s\n' "$NEW_PASSWORD" | "$HELPER" -username "$USERNAME"
+if [ "$ALLOW_WEAK_PASSWORD" -eq 1 ]; then
+  printf '%s\n' "$NEW_PASSWORD" | "$HELPER" -username "$USERNAME" -allow-weak-password
+else
+  printf '%s\n' "$NEW_PASSWORD" | "$HELPER" -username "$USERNAME"
+fi
 unset NEW_PASSWORD

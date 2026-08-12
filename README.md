@@ -268,6 +268,14 @@ Go 服务直接监听 `.env` 的 `HTTP_ADDR`（默认 `127.0.0.1:10001`）。不
 sudo sh /usr/local/seo_monitor/scripts/change-password.sh admin
 ```
 
+默认仍要求新密码为 12–72 字节。如果因兼容性必须临时使用 8–11 字节的旧密码，可由服务器 root 管理员显式绕过最短长度限制（网页端不会开放该能力）：
+
+```bash
+sudo sh /usr/local/seo_monitor/scripts/change-password.sh --allow-weak-password admin
+```
+
+该选项会显示安全警告；公网部署应配合登录限速，并尽快恢复 12 字节以上的唯一强密码。
+
 `AUTH_TRUSTED_PROXY_CIDRS` 只填写真正能直连 Go 后端的代理地址。标准部署中只有本机 Web 代理能连接后端，因此保留 `127.0.0.1/32,::1/128`。后端从代理链右向左查找第一个不可信地址作为客户端 IP，直接访问后端时会忽略伪造的 `X-Forwarded-For`。
 
 公网入口请使用前端仓库中的 `deploy/nginx-seo-monitor.conf.example`：它包含登录专用限速（每 IP 平均 5 次/分钟）、通用 API 限速、并发连接上限、1 MiB 请求体限制、超时、TLS 1.2/1.3、HSTS、CSP 和其他安全响应头。部署后只在防火墙/安全组开放必需的 SSH 来源以及 TCP 80/443；`8889`、`10001`、`27017` 均应仅限本机或内网。
