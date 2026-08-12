@@ -1,0 +1,8 @@
+# Merge these settings into /etc/mongod.conf. Do not replace unrelated
+# storage, logging, replication, or process-management settings.
+net:
+  bindIp: 127.0.0.1
+  port: 27017
+
+security:
+  authorization: enabled

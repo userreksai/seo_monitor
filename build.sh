@@ -24,9 +24,4 @@ echo "==> Building bin/seo-monitor"
 mkdir -p bin
 CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags="-s -w" -o bin/seo-monitor ./cmd/server
 
-echo "==> Building bin/seo-monitor-change-password"
-CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags="-s -w" -o bin/seo-monitor-change-password ./cmd/change-password
-
-echo "Build complete:"
-echo "  $PROJECT_DIR/bin/seo-monitor"
-echo "  $PROJECT_DIR/bin/seo-monitor-change-password"
+echo "Build complete: $PROJECT_DIR/bin/seo-monitor"

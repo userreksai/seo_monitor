@@ -98,6 +98,11 @@ type authContextKey struct{}
 
 const sessionCookieName = "seo_monitor_session"
 
+const (
+	roleAdmin    = "admin"
+	roleReadonly = "readonly"
+)
+
 func publicUser(user model.User) authenticatedUser {
 	return authenticatedUser{ID: user.ID.Hex(), Username: user.Username, Role: user.Role}
 }
@@ -705,6 +710,11 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			writeError(w, http.StatusInternalServerError, "验证登录状态失败")
 			return
 		}
+		if !roleCanAccessRequest(user.Role, r.Method, r.URL.Path) {
+			s.logger.Warn("authenticated account is not allowed to access request", "user_id", user.ID.Hex(), "role", user.Role, "method", r.Method, "path", r.URL.Path)
+			writeError(w, http.StatusForbidden, "账号没有权限执行此操作")
+			return
+		}
 		if cookieAuthenticated && requestChangesState(r.Method) && r.Header.Get("X-CSRF-Protection") != "1" {
 			writeError(w, http.StatusForbidden, "请求缺少 CSRF 防护标记")
 			return
@@ -735,6 +745,19 @@ func sessionToken(r *http.Request) string {
 
 func requestChangesState(method string) bool {
 	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
+}
+
+func roleCanAccessRequest(role, method, path string) bool {
+	if role == roleAdmin {
+		return true
+	}
+	if role != roleReadonly {
+		return false
+	}
+	if !requestChangesState(method) {
+		return true
+	}
+	return method == http.MethodPost && path == "/api/v1/auth/logout"
 }
 
 func (s *Server) setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time) {

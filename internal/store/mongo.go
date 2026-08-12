@@ -23,9 +23,15 @@ import (
 )
 
 var (
-	ErrNotFound      = errors.New("not found")
-	ErrConflict      = errors.New("conflict")
-	ErrInvalidSearch = errors.New("invalid search")
+	ErrNotFound        = errors.New("not found")
+	ErrConflict        = errors.New("conflict")
+	ErrInvalidSearch   = errors.New("invalid search")
+	ErrInvalidPassword = errors.New("invalid password")
+)
+
+const (
+	minPasswordBytes = 12
+	maxPasswordBytes = 72
 )
 
 type latestSearchField struct {
@@ -306,6 +312,20 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 
 func normalizeUsername(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func validateNewPassword(password string) error {
+	if strings.ContainsAny(password, "\r\n") {
+		return fmt.Errorf("%w: password cannot contain a line break", ErrInvalidPassword)
+	}
+	passwordBytes := len([]byte(password))
+	if passwordBytes < minPasswordBytes {
+		return fmt.Errorf("%w: password must contain at least %d bytes", ErrInvalidPassword, minPasswordBytes)
+	}
+	if passwordBytes > maxPasswordBytes {
+		return fmt.Errorf("%w: password must contain at most %d bytes", ErrInvalidPassword, maxPasswordBytes)
+	}
+	return nil
 }
 
 func tokenDigest(token string) string {

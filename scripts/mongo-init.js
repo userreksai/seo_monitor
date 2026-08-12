@@ -139,7 +139,7 @@ ensureCollection("users", {
     _id: { bsonType: "objectId" },
     username: { bsonType: "string", minLength: 1, maxLength: 100 },
     password_hash: { bsonType: "string", description: "bcrypt password hash" },
-    role: { bsonType: "string" },
+    role: { enum: ["admin", "readonly"] },
     active: { bsonType: "bool" },
     created_at: { bsonType: "date" },
     updated_at: { bsonType: "date" },
