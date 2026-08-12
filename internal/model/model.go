@@ -29,14 +29,15 @@ type DomainPatch struct {
 // User is an application account. PasswordHash is intentionally never exposed
 // through JSON responses.
 type User struct {
-	ID           primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	Username     string             `bson:"username" json:"username"`
-	PasswordHash string             `bson:"password_hash" json:"-"`
-	Role         string             `bson:"role" json:"role"`
-	Active       bool               `bson:"active" json:"active"`
-	CreatedAt    time.Time          `bson:"created_at" json:"created_at"`
-	UpdatedAt    time.Time          `bson:"updated_at" json:"updated_at"`
-	LastLoginAt  *time.Time         `bson:"last_login_at,omitempty" json:"last_login_at,omitempty"`
+	ID                primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	Username          string             `bson:"username" json:"username"`
+	PasswordHash      string             `bson:"password_hash" json:"-"`
+	Role              string             `bson:"role" json:"role"`
+	Active            bool               `bson:"active" json:"active"`
+	CreatedAt         time.Time          `bson:"created_at" json:"created_at"`
+	UpdatedAt         time.Time          `bson:"updated_at" json:"updated_at"`
+	LastLoginAt       *time.Time         `bson:"last_login_at,omitempty" json:"last_login_at,omitempty"`
+	PasswordChangedAt *time.Time         `bson:"password_changed_at,omitempty" json:"-"`
 }
 
 // AuthSession stores only a digest of the bearer token. A database leak cannot

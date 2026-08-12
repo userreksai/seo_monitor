@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -22,13 +23,16 @@ import (
 )
 
 type Server struct {
-	store          *store.Store
-	certificates   CertificateRefresher
-	location       *time.Location
-	apiToken       string
-	authSessionTTL time.Duration
-	allowedOrigins map[string]struct{}
-	logger         *slog.Logger
+	store            *store.Store
+	certificates     CertificateRefresher
+	location         *time.Location
+	apiToken         string
+	authSessionTTL   time.Duration
+	authCookieSecure bool
+	loginLimiter     *loginLimiter
+	trustedProxies   []netip.Prefix
+	allowedOrigins   map[string]struct{}
+	logger           *slog.Logger
 }
 
 type CertificateRefresher interface {
@@ -36,9 +40,11 @@ type CertificateRefresher interface {
 	Progress() model.TaskProgress
 }
 
-func New(st *store.Store, certificates CertificateRefresher, location *time.Location, apiToken string, authSessionTTL time.Duration, origins []string, logger *slog.Logger) http.Handler {
+func New(st *store.Store, certificates CertificateRefresher, location *time.Location, apiToken string, authSessionTTL time.Duration, authCookieSecure bool, loginProtection LoginProtectionConfig, origins []string, logger *slog.Logger) http.Handler {
 	server := &Server{
 		store: st, certificates: certificates, location: location, apiToken: apiToken, authSessionTTL: authSessionTTL,
+		authCookieSecure: authCookieSecure,
+		loginLimiter:     newLoginLimiter(loginProtection), trustedProxies: loginProtection.TrustedProxies,
 		allowedOrigins: make(map[string]struct{}, len(origins)), logger: logger,
 	}
 	for _, origin := range origins {
@@ -50,6 +56,7 @@ func New(st *store.Store, certificates CertificateRefresher, location *time.Loca
 	mux.HandleFunc("POST /api/v1/auth/login", server.login)
 	mux.HandleFunc("GET /api/v1/auth/me", server.currentUser)
 	mux.HandleFunc("POST /api/v1/auth/logout", server.logout)
+	mux.HandleFunc("POST /api/v1/auth/password", server.changePassword)
 	mux.HandleFunc("GET /api/v1/domains", server.listDomains)
 	mux.HandleFunc("POST /api/v1/domains", server.createDomain)
 	mux.HandleFunc("POST /api/v1/domains/bulk", server.bulkDomains)
@@ -82,7 +89,14 @@ type authenticatedUser struct {
 	Role     string `json:"role"`
 }
 
+type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
 type authContextKey struct{}
+
+const sessionCookieName = "seo_monitor_session"
 
 func publicUser(user model.User) authenticatedUser {
 	return authenticatedUser{ID: user.ID.Hex(), Username: user.Username, Role: user.Role}
@@ -95,12 +109,25 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if len(strings.TrimSpace(request.Username)) > 100 || len(request.Password) > 200 {
+	if len(strings.TrimSpace(request.Username)) > 100 || len(request.Password) > 72 {
 		writeError(w, http.StatusBadRequest, "账号或密码格式无效")
 		return
 	}
+	requestIP := clientIP(r, s.trustedProxies)
+	attempt, retryAfter := s.loginLimiter.Start(requestIP, request.Username)
+	if attempt == nil {
+		s.logger.Warn("login rate limited", "client_ip", requestIP, "retry_after", retryAfter)
+		writeLoginRateLimit(w, retryAfter)
+		return
+	}
+	defer attempt.Cancel()
 	user, err := s.store.AuthenticateUser(r.Context(), request.Username, request.Password)
 	if errors.Is(err, store.ErrNotFound) {
+		if retryAfter := attempt.Failure(); retryAfter > 0 {
+			s.logger.Warn("login rate limited after failed authentication", "client_ip", requestIP, "retry_after", retryAfter)
+			writeLoginRateLimit(w, retryAfter)
+			return
+		}
 		writeError(w, http.StatusUnauthorized, "账号或密码错误")
 		return
 	}
@@ -108,13 +135,15 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "登录失败，请稍后重试")
 		return
 	}
+	attempt.Success()
 	token, expiresAt, err := s.store.CreateSession(r.Context(), user.ID, s.authSessionTTL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "创建登录会话失败")
 		return
 	}
+	s.setSessionCookie(w, token, expiresAt)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"token": token, "expires_at": expiresAt, "user": publicUser(user),
+		"expires_at": expiresAt, "user": publicUser(user),
 	})
 }
 
@@ -133,10 +162,44 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "请使用账号登录")
 		return
 	}
-	if err := s.store.DeleteSession(r.Context(), bearerToken(r)); err != nil {
+	if err := s.store.DeleteSession(r.Context(), sessionToken(r)); err != nil {
 		writeError(w, http.StatusInternalServerError, "退出登录失败")
 		return
 	}
+	s.clearSessionCookie(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
+	user, ok := r.Context().Value(authContextKey{}).(model.User)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "请使用账号登录")
+		return
+	}
+	var request changePasswordRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(request.CurrentPassword) > 72 || len(request.NewPassword) < 12 || len(request.NewPassword) > 72 {
+		writeError(w, http.StatusBadRequest, "新密码必须为 12 到 72 字节")
+		return
+	}
+	if request.CurrentPassword == request.NewPassword {
+		writeError(w, http.StatusBadRequest, "新密码不能与当前密码相同")
+		return
+	}
+	if err := s.store.ChangePassword(r.Context(), user.ID, request.CurrentPassword, request.NewPassword); errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusUnauthorized, "当前密码错误")
+		return
+	} else if errors.Is(err, store.ErrInvalidPassword) {
+		writeError(w, http.StatusBadRequest, "新密码必须为 12 到 72 字节且不能包含换行符")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "修改密码失败，请稍后重试")
+		return
+	}
+	s.clearSessionCookie(w)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -617,10 +680,18 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		w.Header().Set("Cache-Control", "no-store")
 		token := bearerToken(r)
 		if s.apiToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.apiToken)) == 1 {
 			next.ServeHTTP(w, r)
 			return
+		}
+		cookieAuthenticated := false
+		if token == "" {
+			if cookie, cookieErr := r.Cookie(sessionCookieName); cookieErr == nil {
+				token = cookie.Value
+				cookieAuthenticated = true
+			}
 		}
 		user, err := s.store.AuthenticateSession(r.Context(), token)
 		if errors.Is(err, store.ErrNotFound) {
@@ -629,6 +700,10 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "验证登录状态失败")
+			return
+		}
+		if cookieAuthenticated && requestChangesState(r.Method) && r.Header.Get("X-CSRF-Protection") != "1" {
+			writeError(w, http.StatusForbidden, "请求缺少 CSRF 防护标记")
 			return
 		}
 		ctx := context.WithValue(r.Context(), authContextKey{}, user)
@@ -644,13 +719,44 @@ func bearerToken(r *http.Request) string {
 	return strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
 }
 
+func sessionToken(r *http.Request) string {
+	if token := bearerToken(r); token != "" {
+		return token
+	}
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return ""
+	}
+	return cookie.Value
+}
+
+func requestChangesState(method string) bool {
+	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
+}
+
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name: sessionCookieName, Value: token, Path: "/api/", HttpOnly: true,
+		Secure: s.authCookieSecure, SameSite: http.SameSiteStrictMode,
+		Expires: expiresAt, MaxAge: int(time.Until(expiresAt).Seconds()),
+	})
+}
+
+func (s *Server) clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name: sessionCookieName, Value: "", Path: "/api/", HttpOnly: true,
+		Secure: s.authCookieSecure, SameSite: http.SameSiteStrictMode,
+		Expires: time.Unix(1, 0), MaxAge: -1,
+	})
+}
+
 func (s *Server) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if _, allowed := s.allowedOrigins[origin]; origin != "" && allowed {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-CSRF-Protection")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		}
 		if r.Method == http.MethodOptions {

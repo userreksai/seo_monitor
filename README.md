@@ -111,8 +111,14 @@ MONGODB_URI=mongodb://seo_monitor_app:密码@127.0.0.1:27017/seo_monitor?authSou
 MONGODB_DATABASE=seo_monitor
 API_TOKEN=一段足够长的随机字符串
 DEFAULT_ADMIN_USERNAME=admin
-DEFAULT_ADMIN_PASSWORD=admin1818
-AUTH_SESSION_TTL=24h
+DEFAULT_ADMIN_PASSWORD=请替换为随机生成的强密码
+AUTH_SESSION_TTL=8h
+AUTH_COOKIE_SECURE=true
+AUTH_LOGIN_PAIR_MAX_FAILURES=5
+AUTH_LOGIN_IP_MAX_FAILURES=10
+AUTH_LOGIN_FAILURE_WINDOW=15m
+AUTH_LOGIN_LOCKOUT=15m
+AUTH_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
 ```
 
 默认每天北京时间 `02:15` 排队采集，应用启动时会补采当天尚未成功的域名：
@@ -183,7 +189,7 @@ sudo env \
 
 如果 `/usr/local/seo_monitor` 只有域名 JSON、`.env`，或者是以前手动上传且尚未包含 `.git` 的项目源码，脚本会把整个旧目录保存为 `/usr/local/seo_monitor.backup.YYYYMMDDHHMMSS`，克隆正式仓库，并自动迁移旧配置；不会直接覆盖或删除旧文件。目录出现不属于项目的未知文件时仍会安全停止。
 
-如果已经手动初始化数据库，可以增加 `SKIP_MONGO_INIT=1`。即使跳过 `mongo-init.js`，Go 服务启动时仍会自动创建 `users`、`auth_sessions` 集合、所需索引以及默认管理员 `admin / admin1818`；已存在的管理员不会在重启时被覆盖。脚本必须以 root 运行，并要求服务器已安装 `git`、`go`、`systemctl`；未跳过数据库初始化时还要求 `mongosh`。首次安装会生成随机 API Token 并写入权限为 `600` 的 `/usr/local/seo_monitor/.env`，后续运行不会覆盖该文件。
+如果已经手动初始化数据库，可以增加 `SKIP_MONGO_INIT=1`。即使跳过 `mongo-init.js`，Go 服务启动时仍会自动创建 `users`、`auth_sessions` 集合、所需索引以及默认管理员；已存在的管理员不会在重启时被覆盖。脚本必须以 root 运行，并要求服务器已安装 `git`、`go`、`systemctl`；未跳过数据库初始化时还要求 `mongosh`。首次安装会分别生成随机 API Token 和 64 位随机管理员密码，写入权限为 `600` 的 `/usr/local/seo_monitor/.env`，并只在首次安装结束时显示密码；后续运行不会覆盖或再次显示它。
 
 ### 1. 上传源码并编译
 
@@ -246,7 +252,27 @@ sudo -u seo-monitor sh build.sh
 sudo systemctl start seo-monitor
 ```
 
-Go 服务直接监听 `.env` 的 `HTTP_ADDR`（默认 `127.0.0.1:10001`）。如需公网访问，建议由 Nginx/Caddy 反向代理到它并启用 HTTPS；MongoDB 只允许本机或内网访问。
+Go 服务直接监听 `.env` 的 `HTTP_ADDR`（默认 `127.0.0.1:10001`）。不要把该端口直接开放到公网；由只监听回环地址的 Web 服务转发 API，再由 Nginx 在 443 终止 TLS。MongoDB 只允许本机或内网访问，绝不能向公网开放 27017。
+
+### 公网登录安全
+
+登录接口同时执行两层失败计数：同一“IP + 账号”在 15 分钟内失败 5 次，或同一 IP 针对任意账号累计失败 10 次，都会锁定 15 分钟并返回 `429` 与 `Retry-After`。计数在密码哈希校验前预留并发名额，可阻止并发请求绕过阈值。登录成功只清除该 IP/账号组合的失败计数，不会清除该 IP 的撞库/喷洒计数。
+
+浏览器会话使用 `HttpOnly; Secure; SameSite=Strict` Cookie，写操作还要求 CSRF 防护头；前端不再把会话令牌持久化到 `localStorage`。公网 HTTPS 必须保持 `AUTH_COOKIE_SECURE=true`，只有本机纯 HTTP 开发时才可临时设为 `false`。
+
+登录后可在页面右上角选择“修改密码”。新密码要求 12–72 字节；修改成功会注销该账号的所有现有会话。已有数据库若仍使用早期默认密码，请上线前立即修改，因为更新 `.env` 不会覆盖数据库中已创建账号的密码。
+
+也可以在服务器本机交互式重置（密码不会出现在命令行参数或 shell 历史中）：
+
+```sh
+sudo sh /usr/local/seo_monitor/scripts/change-password.sh admin
+```
+
+`AUTH_TRUSTED_PROXY_CIDRS` 只填写真正能直连 Go 后端的代理地址。标准部署中只有本机 Web 代理能连接后端，因此保留 `127.0.0.1/32,::1/128`。后端从代理链右向左查找第一个不可信地址作为客户端 IP，直接访问后端时会忽略伪造的 `X-Forwarded-For`。
+
+公网入口请使用前端仓库中的 `deploy/nginx-seo-monitor.conf.example`：它包含登录专用限速（每 IP 平均 5 次/分钟）、通用 API 限速、并发连接上限、1 MiB 请求体限制、超时、TLS 1.2/1.3、HSTS、CSP 和其他安全响应头。部署后只在防火墙/安全组开放必需的 SSH 来源以及 TCP 80/443；`8889`、`10001`、`27017` 均应仅限本机或内网。
+
+应用内失败计数存放在单个 Go 进程内，服务重启会清空。如果以后部署多个后端实例，应把封禁状态迁移到 Redis 等共享存储，或在统一的 WAF/CDN 层执行；对于高风险后台，优先再加 VPN/IP 白名单或支持 MFA 的身份代理。
 
 Windows 服务器也可直接源码编译运行：
 
@@ -268,9 +294,11 @@ $env:API_TOKEN="你的随机令牌"
 设置公共请求头：
 
 ```text
-Authorization: Bearer <API_TOKEN 或登录返回的 token>
+Authorization: Bearer <API_TOKEN>
 Content-Type: application/json
 ```
+
+同源浏览器页面默认使用安全会话 Cookie；`Authorization` 方式保留给脚本和受信任的服务调用。若不需要这类调用，可将 `API_TOKEN` 留空以减少长期静态凭据。
 
 主要接口：
 
@@ -279,6 +307,7 @@ Content-Type: application/json
 | `POST` | `/api/v1/auth/login` | 账号密码登录（无需 Token） |
 | `GET` | `/api/v1/auth/me` | 获取当前登录账号 |
 | `POST` | `/api/v1/auth/logout` | 退出并注销当前会话 |
+| `POST` | `/api/v1/auth/password` | 修改当前账号密码并注销全部会话 |
 | `POST` | `/api/v1/domains` | 新增域名 |
 | `POST` | `/api/v1/domains/bulk` | 批量新增，最多 1000 个 |
 | `GET` | `/api/v1/domains` | 域名列表 |

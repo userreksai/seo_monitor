@@ -144,6 +144,7 @@ ensureCollection("users", {
     created_at: { bsonType: "date" },
     updated_at: { bsonType: "date" },
     last_login_at: { bsonType: "date" },
+    password_changed_at: { bsonType: "date" },
   },
 });
 
