@@ -168,6 +168,9 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     printf 'CERTIFICATE_DOMAINS_FILE=certificate_domains.json\n'
     printf 'HTTP_ADDR=127.0.0.1:10001\n'
     printf 'API_TOKEN=%s\n' "$APP_API_TOKEN"
+    printf 'DEFAULT_ADMIN_USERNAME=admin\n'
+    printf 'DEFAULT_ADMIN_PASSWORD=admin1818\n'
+    printf 'AUTH_SESSION_TTL=24h\n'
     printf 'CORS_ALLOWED_ORIGINS=\n'
     printf 'SOURCE_BASE_URL=https://seo.chinaz.com\n'
     printf 'SOURCE_DATA_URL=https://othertool.chinaz.com\n'
@@ -204,6 +207,9 @@ else
       certificate_agent_token_seen = 0
       certificate_agent_timeout_seen = 0
       certificate_agent_concurrency_seen = 0
+      admin_user_seen = 0
+      admin_password_seen = 0
+      session_ttl_seen = 0
     }
     /^HTTP_ADDR=/ {
       if (!http_updated) {
@@ -218,6 +224,9 @@ else
     /^CERTIFICATE_AGENT_TOKEN=/ { certificate_agent_token_seen = 1 }
     /^CERTIFICATE_AGENT_TIMEOUT=/ { certificate_agent_timeout_seen = 1 }
     /^CERTIFICATE_AGENT_MAX_CONCURRENT=/ { certificate_agent_concurrency_seen = 1 }
+    /^DEFAULT_ADMIN_USERNAME=/ { if (!admin_user_seen) { print; admin_user_seen = 1 }; next }
+    /^DEFAULT_ADMIN_PASSWORD=/ { if (!admin_password_seen) { print; admin_password_seen = 1 }; next }
+    /^AUTH_SESSION_TTL=/ { if (!session_ttl_seen) { print; session_ttl_seen = 1 }; next }
     { print }
     END {
       if (!http_updated) print "HTTP_ADDR=127.0.0.1:10001"
@@ -227,6 +236,9 @@ else
       if (!certificate_agent_token_seen) print "CERTIFICATE_AGENT_TOKEN="
       if (!certificate_agent_timeout_seen) print "CERTIFICATE_AGENT_TIMEOUT=15s"
       if (!certificate_agent_concurrency_seen) print "CERTIFICATE_AGENT_MAX_CONCURRENT=4"
+      if (!admin_user_seen) print "DEFAULT_ADMIN_USERNAME=admin"
+      if (!admin_password_seen) print "DEFAULT_ADMIN_PASSWORD=admin1818"
+      if (!session_ttl_seen) print "AUTH_SESSION_TTL=24h"
     }
   ' "$INSTALL_DIR/.env" >"$ENV_TEMP"
   mv "$ENV_TEMP" "$INSTALL_DIR/.env"
@@ -280,6 +292,7 @@ printf 'Source:  %s\n' "$INSTALL_DIR"
 printf 'Domains: %s/domains.json\n' "$INSTALL_DIR"
 printf 'Certificate domains: %s/certificate_domains.json\n' "$INSTALL_DIR"
 printf 'Config:  %s/.env\n' "$INSTALL_DIR"
+printf 'Login:   admin / admin1818\n'
 if [ -n "$LEGACY_BACKUP" ]; then
   printf 'Backup:  %s\n' "$LEGACY_BACKUP"
 fi

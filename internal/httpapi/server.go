@@ -26,6 +26,7 @@ type Server struct {
 	certificates   CertificateRefresher
 	location       *time.Location
 	apiToken       string
+	authSessionTTL time.Duration
 	allowedOrigins map[string]struct{}
 	logger         *slog.Logger
 }
@@ -35,9 +36,9 @@ type CertificateRefresher interface {
 	Progress() model.TaskProgress
 }
 
-func New(st *store.Store, certificates CertificateRefresher, location *time.Location, apiToken string, origins []string, logger *slog.Logger) http.Handler {
+func New(st *store.Store, certificates CertificateRefresher, location *time.Location, apiToken string, authSessionTTL time.Duration, origins []string, logger *slog.Logger) http.Handler {
 	server := &Server{
-		store: st, certificates: certificates, location: location, apiToken: apiToken,
+		store: st, certificates: certificates, location: location, apiToken: apiToken, authSessionTTL: authSessionTTL,
 		allowedOrigins: make(map[string]struct{}, len(origins)), logger: logger,
 	}
 	for _, origin := range origins {
@@ -46,6 +47,9 @@ func New(st *store.Store, certificates CertificateRefresher, location *time.Loca
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
+	mux.HandleFunc("POST /api/v1/auth/login", server.login)
+	mux.HandleFunc("GET /api/v1/auth/me", server.currentUser)
+	mux.HandleFunc("POST /api/v1/auth/logout", server.logout)
 	mux.HandleFunc("GET /api/v1/domains", server.listDomains)
 	mux.HandleFunc("POST /api/v1/domains", server.createDomain)
 	mux.HandleFunc("POST /api/v1/domains/bulk", server.bulkDomains)
@@ -65,6 +69,75 @@ func New(st *store.Store, certificates CertificateRefresher, location *time.Loca
 	mux.HandleFunc("GET /api/v1/jobs", server.listJobs)
 
 	return server.recoverPanic(server.logRequests(server.cors(server.authenticate(mux))))
+}
+
+type loginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type authenticatedUser struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Role     string `json:"role"`
+}
+
+type authContextKey struct{}
+
+func publicUser(user model.User) authenticatedUser {
+	return authenticatedUser{ID: user.ID.Hex(), Username: user.Username, Role: user.Role}
+}
+
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var request loginRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(strings.TrimSpace(request.Username)) > 100 || len(request.Password) > 200 {
+		writeError(w, http.StatusBadRequest, "账号或密码格式无效")
+		return
+	}
+	user, err := s.store.AuthenticateUser(r.Context(), request.Username, request.Password)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusUnauthorized, "账号或密码错误")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "登录失败，请稍后重试")
+		return
+	}
+	token, expiresAt, err := s.store.CreateSession(r.Context(), user.ID, s.authSessionTTL)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "创建登录会话失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token": token, "expires_at": expiresAt, "user": publicUser(user),
+	})
+}
+
+func (s *Server) currentUser(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	user, ok := r.Context().Value(authContextKey{}).(model.User)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "请使用账号登录")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": publicUser(user)})
+}
+
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	if _, ok := r.Context().Value(authContextKey{}).(model.User); !ok {
+		writeError(w, http.StatusUnauthorized, "请使用账号登录")
+		return
+	}
+	if err := s.store.DeleteSession(r.Context(), bearerToken(r)); err != nil {
+		writeError(w, http.StatusInternalServerError, "退出登录失败")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -540,17 +613,35 @@ func writeError(w http.ResponseWriter, status int, message string) {
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.apiToken == "" || !strings.HasPrefix(r.URL.Path, "/api/") || r.Method == http.MethodOptions {
+		if !strings.HasPrefix(r.URL.Path, "/api/") || r.Method == http.MethodOptions || r.URL.Path == "/api/v1/auth/login" {
 			next.ServeHTTP(w, r)
 			return
 		}
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(token), []byte(s.apiToken)) != 1 {
-			writeError(w, http.StatusUnauthorized, "未授权")
+		token := bearerToken(r)
+		if s.apiToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.apiToken)) == 1 {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		user, err := s.store.AuthenticateSession(r.Context(), token)
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusUnauthorized, "登录已失效，请重新登录")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "验证登录状态失败")
+			return
+		}
+		ctx := context.WithValue(r.Context(), authContextKey{}, user)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func bearerToken(r *http.Request) string {
+	header := r.Header.Get("Authorization")
+	if !strings.HasPrefix(header, "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
 }
 
 func (s *Server) cors(next http.Handler) http.Handler {

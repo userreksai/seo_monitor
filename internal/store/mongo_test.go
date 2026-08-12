@@ -3,12 +3,27 @@ package store
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
+
+func TestNormalizeUsername(t *testing.T) {
+	if got := normalizeUsername("  AdMiN  "); got != "admin" {
+		t.Fatalf("normalizeUsername() = %q, want admin", got)
+	}
+}
+
+func TestTokenDigestDoesNotExposeToken(t *testing.T) {
+	token := strings.Repeat("a", 64)
+	digest := tokenDigest(token)
+	if len(digest) != 64 || digest == token {
+		t.Fatalf("unexpected token digest %q", digest)
+	}
+}
 
 func TestLatestSearchMatchText(t *testing.T) {
 	match, err := latestSearchMatch("domain", "Example.COM")
