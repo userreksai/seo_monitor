@@ -86,6 +86,9 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("authentication data ready", "default_username", cfg.DefaultAdminUsername)
+	if cfg.DefaultAdminUsername == "admin" && cfg.DefaultAdminPassword == "admin1818" {
+		logger.Warn("insecure default administrator credentials are configured; change them before public deployment")
+	}
 
 	syncDomainsFile := func() error {
 		domains, loadErr := domainfile.Load(cfg.DomainsFile)
@@ -202,8 +205,12 @@ func main() {
 	defer scheduler.Stop()
 
 	httpServer := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.New(st, certificateService, location, cfg.APIToken, cfg.AuthSessionTTL, cfg.AllowedOrigins, logger),
+		Addr: cfg.HTTPAddr,
+		Handler: httpapi.New(st, certificateService, location, cfg.APIToken, cfg.AuthSessionTTL, cfg.AuthCookieSecure, httpapi.LoginProtectionConfig{
+			IPMaxFailures: cfg.AuthLoginIPMaxFailures, PairMaxFailures: cfg.AuthLoginPairMaxFailures,
+			FailureWindow: cfg.AuthLoginFailureWindow, Lockout: cfg.AuthLoginLockout,
+			TrustedProxies: cfg.AuthTrustedProxyCIDRs,
+		}, cfg.AllowedOrigins, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -18,6 +19,12 @@ type Config struct {
 	DefaultAdminUsername        string
 	DefaultAdminPassword        string
 	AuthSessionTTL              time.Duration
+	AuthCookieSecure            bool
+	AuthLoginIPMaxFailures      int
+	AuthLoginPairMaxFailures    int
+	AuthLoginFailureWindow      time.Duration
+	AuthLoginLockout            time.Duration
+	AuthTrustedProxyCIDRs       []netip.Prefix
 	AllowedOrigins              []string
 	EnsureIndexes               bool
 	SourceBaseURL               string
@@ -46,6 +53,10 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	trustedProxyCIDRs, err := envPrefixes("AUTH_TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128")
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		MongoDBURI:                  env("MONGODB_URI", "mongodb://localhost:27017"),
 		MongoDBDatabase:             env("MONGODB_DATABASE", "seo_monitor"),
@@ -54,8 +65,14 @@ func Load() (Config, error) {
 		HTTPAddr:                    env("HTTP_ADDR", "127.0.0.1:10001"),
 		APIToken:                    os.Getenv("API_TOKEN"),
 		DefaultAdminUsername:        env("DEFAULT_ADMIN_USERNAME", "admin"),
-		DefaultAdminPassword:        env("DEFAULT_ADMIN_PASSWORD", "admin1818"),
-		AuthSessionTTL:              envDuration("AUTH_SESSION_TTL", 24*time.Hour),
+		DefaultAdminPassword:        strings.TrimSpace(os.Getenv("DEFAULT_ADMIN_PASSWORD")),
+		AuthSessionTTL:              envDuration("AUTH_SESSION_TTL", 8*time.Hour),
+		AuthCookieSecure:            envBool("AUTH_COOKIE_SECURE", true),
+		AuthLoginIPMaxFailures:      envInt("AUTH_LOGIN_IP_MAX_FAILURES", 10),
+		AuthLoginPairMaxFailures:    envInt("AUTH_LOGIN_PAIR_MAX_FAILURES", 5),
+		AuthLoginFailureWindow:      envDuration("AUTH_LOGIN_FAILURE_WINDOW", 15*time.Minute),
+		AuthLoginLockout:            envDuration("AUTH_LOGIN_LOCKOUT", 15*time.Minute),
+		AuthTrustedProxyCIDRs:       trustedProxyCIDRs,
 		AllowedOrigins:              splitCSV(os.Getenv("CORS_ALLOWED_ORIGINS")),
 		EnsureIndexes:               envBool("ENSURE_INDEXES", true),
 		SourceBaseURL:               env("SOURCE_BASE_URL", "https://seo.chinaz.com"),
@@ -90,10 +107,25 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("DEFAULT_ADMIN_USERNAME 不能为空")
 	}
 	if len(cfg.DefaultAdminPassword) < 8 {
-		return Config{}, fmt.Errorf("DEFAULT_ADMIN_PASSWORD 至少需要 8 个字符")
+		return Config{}, fmt.Errorf("DEFAULT_ADMIN_PASSWORD 至少需要 8 字节")
+	}
+	if len(cfg.DefaultAdminPassword) > 72 {
+		return Config{}, fmt.Errorf("DEFAULT_ADMIN_PASSWORD 不能超过 72 字节（bcrypt 限制）")
 	}
 	if cfg.AuthSessionTTL < 5*time.Minute || cfg.AuthSessionTTL > 30*24*time.Hour {
 		return Config{}, fmt.Errorf("AUTH_SESSION_TTL 必须在 5 分钟到 30 天之间")
+	}
+	if cfg.AuthLoginIPMaxFailures < 1 || cfg.AuthLoginIPMaxFailures > 100 {
+		return Config{}, fmt.Errorf("AUTH_LOGIN_IP_MAX_FAILURES 必须在 1 到 100 之间")
+	}
+	if cfg.AuthLoginPairMaxFailures < 1 || cfg.AuthLoginPairMaxFailures > cfg.AuthLoginIPMaxFailures {
+		return Config{}, fmt.Errorf("AUTH_LOGIN_PAIR_MAX_FAILURES 必须在 1 到 AUTH_LOGIN_IP_MAX_FAILURES 之间")
+	}
+	if cfg.AuthLoginFailureWindow < time.Minute || cfg.AuthLoginFailureWindow > 24*time.Hour {
+		return Config{}, fmt.Errorf("AUTH_LOGIN_FAILURE_WINDOW 必须在 1 分钟到 24 小时之间")
+	}
+	if cfg.AuthLoginLockout < time.Minute || cfg.AuthLoginLockout > 24*time.Hour {
+		return Config{}, fmt.Errorf("AUTH_LOGIN_LOCKOUT 必须在 1 分钟到 24 小时之间")
 	}
 	if cfg.ScrapeRetries < 1 || cfg.ScrapeRetries > 10 {
 		return Config{}, fmt.Errorf("SCRAPE_RETRIES 必须在 1 到 10 之间")
@@ -176,4 +208,25 @@ func splitCSV(value string) []string {
 		}
 	}
 	return out
+}
+
+func envPrefixes(key, fallback string) ([]netip.Prefix, error) {
+	values := splitCSV(os.Getenv(key))
+	if len(values) == 0 {
+		values = splitCSV(fallback)
+	}
+	prefixes := make([]netip.Prefix, 0, len(values))
+	for _, value := range values {
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			address, addressErr := netip.ParseAddr(value)
+			if addressErr != nil {
+				return nil, fmt.Errorf("%s 包含无效的 IP/CIDR %q", key, value)
+			}
+			address = address.Unmap()
+			prefix = netip.PrefixFrom(address, address.BitLen())
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
 }

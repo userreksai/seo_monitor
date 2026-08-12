@@ -216,6 +216,40 @@ func (s *Store) AuthenticateUser(ctx context.Context, username, password string)
 	return user, nil
 }
 
+func (s *Store) ChangePassword(ctx context.Context, userID primitive.ObjectID, currentPassword, newPassword string) error {
+	if err := validateNewPassword(newPassword); err != nil {
+		return err
+	}
+	var user model.User
+	if err := s.users.FindOne(ctx, bson.M{"_id": userID, "active": true}).Decode(&user); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(currentPassword)) != nil {
+		return ErrNotFound
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	result, err := s.users.UpdateOne(ctx, bson.M{"_id": userID, "password_hash": user.PasswordHash}, bson.M{"$set": bson.M{
+		"password_hash": string(hash), "password_changed_at": now, "updated_at": now,
+	}})
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount != 1 {
+		return ErrNotFound
+	}
+	// password_changed_at is the authoritative revocation marker; deletion is
+	// best-effort cleanup so a cleanup failure cannot leave a usable old session.
+	_, _ = s.sessions.DeleteMany(ctx, bson.M{"user_id": userID})
+	return nil
+}
+
 func (s *Store) CreateSession(ctx context.Context, userID primitive.ObjectID, ttl time.Duration) (string, time.Time, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -253,7 +287,13 @@ func (s *Store) AuthenticateSession(ctx context.Context, token string) (model.Us
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return model.User{}, ErrNotFound
 	}
-	return user, err
+	if err != nil {
+		return model.User{}, err
+	}
+	if user.PasswordChangedAt != nil && !session.CreatedAt.After(*user.PasswordChangedAt) {
+		return model.User{}, ErrNotFound
+	}
+	return user, nil
 }
 
 func (s *Store) DeleteSession(ctx context.Context, token string) error {

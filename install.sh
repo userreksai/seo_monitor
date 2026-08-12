@@ -16,6 +16,7 @@ SKIP_MONGO_INIT=${SKIP_MONGO_INIT:-0}
 DOMAINS_BACKUP=
 CERTIFICATE_DOMAINS_BACKUP=
 LEGACY_BACKUP=
+NEW_ADMIN_PASSWORD=
 
 log() {
   printf '\n==> %s\n' "$*"
@@ -160,6 +161,12 @@ fi
 log "Preparing application environment"
 if [ ! -f "$INSTALL_DIR/.env" ]; then
   APP_API_TOKEN=${API_TOKEN:-$(generate_token)}
+  if [ -n "${DEFAULT_ADMIN_PASSWORD:-}" ]; then
+    APP_ADMIN_PASSWORD=$DEFAULT_ADMIN_PASSWORD
+  else
+    APP_ADMIN_PASSWORD=$(generate_token)
+    NEW_ADMIN_PASSWORD=$APP_ADMIN_PASSWORD
+  fi
   {
     printf 'MONGODB_URI=%s\n' "$APP_MONGODB_URI"
     printf 'MONGODB_DATABASE=seo_monitor\n'
@@ -169,8 +176,14 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     printf 'HTTP_ADDR=127.0.0.1:10001\n'
     printf 'API_TOKEN=%s\n' "$APP_API_TOKEN"
     printf 'DEFAULT_ADMIN_USERNAME=admin\n'
-    printf 'DEFAULT_ADMIN_PASSWORD=admin1818\n'
-    printf 'AUTH_SESSION_TTL=24h\n'
+    printf 'DEFAULT_ADMIN_PASSWORD=%s\n' "$APP_ADMIN_PASSWORD"
+    printf 'AUTH_SESSION_TTL=8h\n'
+    printf 'AUTH_COOKIE_SECURE=true\n'
+    printf 'AUTH_LOGIN_PAIR_MAX_FAILURES=5\n'
+    printf 'AUTH_LOGIN_IP_MAX_FAILURES=10\n'
+    printf 'AUTH_LOGIN_FAILURE_WINDOW=15m\n'
+    printf 'AUTH_LOGIN_LOCKOUT=15m\n'
+    printf 'AUTH_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128\n'
     printf 'CORS_ALLOWED_ORIGINS=\n'
     printf 'SOURCE_BASE_URL=https://seo.chinaz.com\n'
     printf 'SOURCE_DATA_URL=https://othertool.chinaz.com\n'
@@ -197,8 +210,12 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
   } >"$INSTALL_DIR/.env"
   log "Created $INSTALL_DIR/.env with a generated API token"
 else
+  APP_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-$(generate_token)}
+  if ! grep -q '^DEFAULT_ADMIN_PASSWORD=.' "$INSTALL_DIR/.env"; then
+    NEW_ADMIN_PASSWORD=$APP_ADMIN_PASSWORD
+  fi
   ENV_TEMP=$(mktemp "$INSTALL_DIR/.env.XXXXXX")
-  awk '
+  awk -v generated_admin_password="$APP_ADMIN_PASSWORD" '
     BEGIN {
       http_updated = 0
       retention_seen = 0
@@ -210,6 +227,12 @@ else
       admin_user_seen = 0
       admin_password_seen = 0
       session_ttl_seen = 0
+      auth_cookie_secure_seen = 0
+      auth_login_pair_max_failures_seen = 0
+      auth_login_ip_max_failures_seen = 0
+      auth_login_failure_window_seen = 0
+      auth_login_lockout_seen = 0
+      auth_trusted_proxy_cidrs_seen = 0
     }
     /^HTTP_ADDR=/ {
       if (!http_updated) {
@@ -225,8 +248,21 @@ else
     /^CERTIFICATE_AGENT_TIMEOUT=/ { certificate_agent_timeout_seen = 1 }
     /^CERTIFICATE_AGENT_MAX_CONCURRENT=/ { certificate_agent_concurrency_seen = 1 }
     /^DEFAULT_ADMIN_USERNAME=/ { if (!admin_user_seen) { print; admin_user_seen = 1 }; next }
-    /^DEFAULT_ADMIN_PASSWORD=/ { if (!admin_password_seen) { print; admin_password_seen = 1 }; next }
+    /^DEFAULT_ADMIN_PASSWORD=/ {
+      if (!admin_password_seen) {
+        if ($0 == "DEFAULT_ADMIN_PASSWORD=") print "DEFAULT_ADMIN_PASSWORD=" generated_admin_password
+        else print
+        admin_password_seen = 1
+      }
+      next
+    }
     /^AUTH_SESSION_TTL=/ { if (!session_ttl_seen) { print; session_ttl_seen = 1 }; next }
+    /^AUTH_COOKIE_SECURE=/ { if (!auth_cookie_secure_seen) { print; auth_cookie_secure_seen = 1 }; next }
+    /^AUTH_LOGIN_PAIR_MAX_FAILURES=/ { if (!auth_login_pair_max_failures_seen) { print; auth_login_pair_max_failures_seen = 1 }; next }
+    /^AUTH_LOGIN_IP_MAX_FAILURES=/ { if (!auth_login_ip_max_failures_seen) { print; auth_login_ip_max_failures_seen = 1 }; next }
+    /^AUTH_LOGIN_FAILURE_WINDOW=/ { if (!auth_login_failure_window_seen) { print; auth_login_failure_window_seen = 1 }; next }
+    /^AUTH_LOGIN_LOCKOUT=/ { if (!auth_login_lockout_seen) { print; auth_login_lockout_seen = 1 }; next }
+    /^AUTH_TRUSTED_PROXY_CIDRS=/ { if (!auth_trusted_proxy_cidrs_seen) { print; auth_trusted_proxy_cidrs_seen = 1 }; next }
     { print }
     END {
       if (!http_updated) print "HTTP_ADDR=127.0.0.1:10001"
@@ -237,8 +273,14 @@ else
       if (!certificate_agent_timeout_seen) print "CERTIFICATE_AGENT_TIMEOUT=15s"
       if (!certificate_agent_concurrency_seen) print "CERTIFICATE_AGENT_MAX_CONCURRENT=4"
       if (!admin_user_seen) print "DEFAULT_ADMIN_USERNAME=admin"
-      if (!admin_password_seen) print "DEFAULT_ADMIN_PASSWORD=admin1818"
-      if (!session_ttl_seen) print "AUTH_SESSION_TTL=24h"
+      if (!admin_password_seen) print "DEFAULT_ADMIN_PASSWORD=" generated_admin_password
+      if (!session_ttl_seen) print "AUTH_SESSION_TTL=8h"
+      if (!auth_cookie_secure_seen) print "AUTH_COOKIE_SECURE=true"
+      if (!auth_login_pair_max_failures_seen) print "AUTH_LOGIN_PAIR_MAX_FAILURES=5"
+      if (!auth_login_ip_max_failures_seen) print "AUTH_LOGIN_IP_MAX_FAILURES=10"
+      if (!auth_login_failure_window_seen) print "AUTH_LOGIN_FAILURE_WINDOW=15m"
+      if (!auth_login_lockout_seen) print "AUTH_LOGIN_LOCKOUT=15m"
+      if (!auth_trusted_proxy_cidrs_seen) print "AUTH_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128"
     }
   ' "$INSTALL_DIR/.env" >"$ENV_TEMP"
   mv "$ENV_TEMP" "$INSTALL_DIR/.env"
@@ -292,7 +334,12 @@ printf 'Source:  %s\n' "$INSTALL_DIR"
 printf 'Domains: %s/domains.json\n' "$INSTALL_DIR"
 printf 'Certificate domains: %s/certificate_domains.json\n' "$INSTALL_DIR"
 printf 'Config:  %s/.env\n' "$INSTALL_DIR"
-printf 'Login:   admin / admin1818\n'
+if [ -n "$NEW_ADMIN_PASSWORD" ]; then
+	printf 'Initial login: admin / %s\n' "$NEW_ADMIN_PASSWORD"
+	printf 'Save this password now; it will not be printed on later updates.\n'
+else
+	printf 'Login: existing database administrator credentials were preserved.\n'
+fi
 if [ -n "$LEGACY_BACKUP" ]; then
   printf 'Backup:  %s\n' "$LEGACY_BACKUP"
 fi
