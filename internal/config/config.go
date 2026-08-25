@@ -37,6 +37,7 @@ type Config struct {
 	MaxResponseBytes            int64
 	WorkerCount                 int
 	JobPollInterval             time.Duration
+	CollectionRetryDelays       []time.Duration
 	StaleJobAfter               time.Duration
 	RetentionDays               int
 	CollectCron                 string
@@ -56,6 +57,10 @@ func Load() (Config, error) {
 	trustedProxyCIDRs, err := envPrefixes("AUTH_TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128")
 	if err != nil {
 		return Config{}, err
+	}
+	retryDelays, err := durationList(env("COLLECTION_RETRY_DELAYS", "10m,30m,1h"))
+	if err != nil {
+		return Config{}, fmt.Errorf("COLLECTION_RETRY_DELAYS 无效: %w", err)
 	}
 	cfg := Config{
 		MongoDBURI:                  env("MONGODB_URI", "mongodb://localhost:27017"),
@@ -85,6 +90,7 @@ func Load() (Config, error) {
 		MaxResponseBytes:            int64(envInt("MAX_RESPONSE_BYTES", 3*1024*1024)),
 		WorkerCount:                 envInt("WORKER_COUNT", 1),
 		JobPollInterval:             envDuration("JOB_POLL_INTERVAL", 2*time.Second),
+		CollectionRetryDelays:       retryDelays,
 		StaleJobAfter:               envDuration("STALE_JOB_AFTER", 20*time.Minute),
 		RetentionDays:               envInt("RETENTION_DAYS", 60),
 		CollectCron:                 env("COLLECT_CRON", "15 2 * * *"),
@@ -136,6 +142,9 @@ func Load() (Config, error) {
 	if cfg.ScrapeMinDelay < 0 || cfg.ScrapeMaxDelay < cfg.ScrapeMinDelay {
 		return Config{}, fmt.Errorf("抓取延迟配置无效")
 	}
+	if len(cfg.CollectionRetryDelays) > 10 {
+		return Config{}, fmt.Errorf("COLLECTION_RETRY_DELAYS 最多允许 10 个重试间隔")
+	}
 	if cfg.RetentionDays < 1 || cfg.RetentionDays > 3650 {
 		return Config{}, fmt.Errorf("RETENTION_DAYS 必须在 1 到 3650 之间")
 	}
@@ -158,6 +167,19 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("SNAPSHOT_TIMEZONE 无效: %w", err)
 	}
 	return cfg, nil
+}
+
+func durationList(value string) ([]time.Duration, error) {
+	parts := strings.Split(value, ",")
+	durations := make([]time.Duration, 0, len(parts))
+	for _, part := range parts {
+		duration, err := time.ParseDuration(strings.TrimSpace(part))
+		if err != nil || duration <= 0 {
+			return nil, fmt.Errorf("重试间隔 %q 必须是大于 0 的 Go duration", part)
+		}
+		durations = append(durations, duration)
+	}
+	return durations, nil
 }
 
 func env(key, fallback string) string {

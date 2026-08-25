@@ -30,3 +30,16 @@ func TestRetentionCutoffKeepsBoundaryDay(t *testing.T) {
 		t.Fatalf("RetentionCutoff = %v, want %v", got, want)
 	}
 }
+
+func TestRetryDelaySchedule(t *testing.T) {
+	delays := []time.Duration{10 * time.Minute, 30 * time.Minute, time.Hour}
+	for attempt, want := range delays {
+		got, retry := retryDelay(attempt+1, delays)
+		if !retry || got != want {
+			t.Fatalf("retryDelay(%d) = %v, %v; want %v, true", attempt+1, got, retry, want)
+		}
+	}
+	if delay, retry := retryDelay(4, delays); retry || delay != 0 {
+		t.Fatalf("fourth failure must be final, got %v, %v", delay, retry)
+	}
+}

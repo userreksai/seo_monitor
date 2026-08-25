@@ -131,6 +131,7 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 
 	_, err = s.jobs.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "queued_at", Value: 1}}, Options: options.Index().SetName("ix_jobs_status_queue")},
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "available_at", Value: 1}, {Key: "queued_at", Value: 1}}, Options: options.Index().SetName("ix_jobs_status_available_queue")},
 		{Keys: bson.D{{Key: "domain_id", Value: 1}, {Key: "snapshot_date", Value: -1}}, Options: options.Index().SetName("ix_jobs_domain_date")},
 		{Keys: bson.D{{Key: "domain_id", Value: 1}, {Key: "queued_at", Value: -1}}, Options: options.Index().SetName("ix_jobs_domain_latest")},
 		{Keys: bson.D{{Key: "snapshot_date", Value: -1}}, Options: options.Index().SetName("ix_jobs_date")},
@@ -552,13 +553,24 @@ func (s *Store) ClaimNextJob(ctx context.Context) (model.CollectionJob, error) {
 		"$inc": bson.M{"attempt_count": 1},
 	}
 	var job model.CollectionJob
-	err := s.jobs.FindOneAndUpdate(ctx, bson.M{"status": "queued"}, update,
-		options.FindOneAndUpdate().SetSort(bson.D{{Key: "queued_at", Value: 1}}).SetReturnDocument(options.After),
+	err := s.jobs.FindOneAndUpdate(ctx, jobReadyFilter(now), update,
+		options.FindOneAndUpdate().SetSort(bson.D{{Key: "available_at", Value: 1}, {Key: "queued_at", Value: 1}}).SetReturnDocument(options.After),
 	).Decode(&job)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return model.CollectionJob{}, ErrNotFound
 	}
 	return job, err
+}
+
+func jobReadyFilter(now time.Time) bson.M {
+	return bson.M{
+		"status": "queued",
+		"$or": bson.A{
+			bson.M{"available_at": bson.M{"$exists": false}},
+			bson.M{"available_at": nil},
+			bson.M{"available_at": bson.M{"$lte": now}},
+		},
+	}
 }
 
 func (s *Store) SaveJobResult(ctx context.Context, job model.CollectionJob, metric model.Metric) error {
@@ -578,27 +590,47 @@ func (s *Store) SaveJobResult(ctx context.Context, job model.CollectionJob, metr
 	now := time.Now().UTC()
 	_, err = s.jobs.UpdateOne(ctx, bson.M{"_id": job.ID}, bson.M{
 		"$set":   bson.M{"status": "succeeded", "finished_at": now},
-		"$unset": bson.M{"dedupe_key": "", "error_message": ""},
+		"$unset": bson.M{"dedupe_key": "", "error_message": "", "available_at": ""},
 	})
 	return err
 }
 
 func (s *Store) MarkJobFailed(ctx context.Context, id primitive.ObjectID, cause error) error {
+	message := collectionErrorMessage(cause)
+	_, err := s.jobs.UpdateOne(ctx, bson.M{"_id": id}, bson.M{
+		"$set":   bson.M{"status": "failed", "finished_at": time.Now().UTC(), "error_message": message},
+		"$unset": bson.M{"dedupe_key": "", "available_at": ""},
+	})
+	return err
+}
+
+// RetryJob returns a failed scrape attempt to the durable queue. Keeping the
+// same job and dedupe key prevents a manual or scheduled duplicate while the
+// backoff is pending.
+func (s *Store) RetryJob(ctx context.Context, id primitive.ObjectID, cause error, availableAt time.Time) error {
+	_, err := s.jobs.UpdateOne(ctx, bson.M{"_id": id, "status": "running"}, bson.M{
+		"$set": bson.M{
+			"status":        "queued",
+			"available_at":  availableAt.UTC(),
+			"error_message": collectionErrorMessage(cause),
+		},
+		"$unset": bson.M{"started_at": "", "finished_at": ""},
+	})
+	return err
+}
+
+func collectionErrorMessage(cause error) string {
 	message := cause.Error()
 	if len(message) > 2000 {
 		message = message[:2000]
 	}
-	_, err := s.jobs.UpdateOne(ctx, bson.M{"_id": id}, bson.M{
-		"$set":   bson.M{"status": "failed", "finished_at": time.Now().UTC(), "error_message": message},
-		"$unset": bson.M{"dedupe_key": ""},
-	})
-	return err
+	return message
 }
 
 func (s *Store) RecoverStaleJobs(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-olderThan)
 	result, err := s.jobs.UpdateMany(ctx, bson.M{"status": "running", "started_at": bson.M{"$lt": cutoff}}, bson.M{
-		"$set":   bson.M{"status": "queued", "queued_at": time.Now().UTC()},
+		"$set":   bson.M{"status": "queued", "queued_at": time.Now().UTC(), "available_at": time.Now().UTC()},
 		"$unset": bson.M{"started_at": ""},
 	})
 	if err != nil {

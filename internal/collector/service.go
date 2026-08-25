@@ -19,11 +19,12 @@ type Service struct {
 	scraper      Scraper
 	workers      int
 	pollInterval time.Duration
+	retryDelays  []time.Duration
 	logger       *slog.Logger
 }
 
-func New(st *store.Store, scraper Scraper, workers int, pollInterval time.Duration, logger *slog.Logger) *Service {
-	return &Service{store: st, scraper: scraper, workers: workers, pollInterval: pollInterval, logger: logger}
+func New(st *store.Store, scraper Scraper, workers int, pollInterval time.Duration, retryDelays []time.Duration, logger *slog.Logger) *Service {
+	return &Service{store: st, scraper: scraper, workers: workers, pollInterval: pollInterval, retryDelays: retryDelays, logger: logger}
 }
 
 func (s *Service) Start(ctx context.Context) {
@@ -57,6 +58,16 @@ func (s *Service) runWorker(ctx context.Context, workerID int) {
 		metric, err := s.scraper.Fetch(ctx, job.Domain)
 		if err != nil {
 			s.logger.Warn("domain collection failed", "job_id", job.ID.Hex(), "domain", job.Domain, "error", err)
+			if delay, retry := retryDelay(job.AttemptCount, s.retryDelays); retry {
+				availableAt := time.Now().UTC().Add(delay)
+				if retryErr := s.store.RetryJob(ctx, job.ID, err, availableAt); retryErr != nil {
+					s.logger.Error("schedule domain retry", "job_id", job.ID.Hex(), "error", retryErr)
+				} else {
+					s.logger.Info("domain retry scheduled", "job_id", job.ID.Hex(), "domain", job.Domain,
+						"attempt", job.AttemptCount, "delay", delay, "available_at", availableAt)
+				}
+				continue
+			}
 			if markErr := s.store.MarkJobFailed(ctx, job.ID, err); markErr != nil {
 				s.logger.Error("mark job failed", "job_id", job.ID.Hex(), "error", markErr)
 			}
@@ -71,6 +82,13 @@ func (s *Service) runWorker(ctx context.Context, workerID int) {
 		}
 		s.logger.Info("domain collection succeeded", "job_id", job.ID.Hex(), "domain", job.Domain)
 	}
+}
+
+func retryDelay(attempt int, delays []time.Duration) (time.Duration, bool) {
+	if attempt < 1 || attempt > len(delays) {
+		return 0, false
+	}
+	return delays[attempt-1], true
 }
 
 func wait(ctx context.Context, duration time.Duration) bool {

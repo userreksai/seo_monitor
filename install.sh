@@ -197,6 +197,7 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     printf 'MAX_RESPONSE_BYTES=3145728\n'
     printf 'WORKER_COUNT=1\n'
     printf 'JOB_POLL_INTERVAL=2s\n'
+    printf 'COLLECTION_RETRY_DELAYS=10m,30m,1h\n'
     printf 'STALE_JOB_AFTER=20m\n'
     printf 'RETENTION_DAYS=60\n'
     printf 'SNAPSHOT_TIMEZONE=Asia/Shanghai\n'

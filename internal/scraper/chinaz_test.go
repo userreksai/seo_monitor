@@ -111,6 +111,33 @@ func TestFetchFallsBackToDataEndpointsForEmptyResultTable(t *testing.T) {
 	}
 }
 
+func TestFetchRejectsEmptyResultWhenRankFallbackIsLimited(t *testing.T) {
+	dataServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "limited", http.StatusTooManyRequests)
+	}))
+	defer dataServer.Close()
+
+	pageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<html><body><table class="_chinaz-seo-newt"><tbody></tbody></table><script>var enkey = "public-key";</script></body></html>`))
+	}))
+	defer pageServer.Close()
+
+	source, err := NewChinaz(Config{
+		BaseURL:          pageServer.URL,
+		DataBaseURL:      dataServer.URL,
+		UserAgent:        "seo-monitor test",
+		Timeout:          time.Second,
+		Retries:          1,
+		MaxResponseBytes: 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Fetch(context.Background(), "77cn.com.cn"); err == nil {
+		t.Fatal("expected empty limited result to be retried by the collection queue")
+	}
+}
+
 func TestMergeRankResponse(t *testing.T) {
 	body := []byte(`seoMonitorCallback({"StateCode":1,"Result":{"baiduPc":{"rank":2,"uv_min":142,"uv_max":226},"baiduMobile":{"rank":4,"uv_min":1744,"uv_max":2786},"sogouPc":{"rank":0,"uv_min":0,"uv_max":0},"bing":{"rank":0,"uv_min":0,"uv_max":0},"haosouPc":{"rank":0,"uv_min":0,"uv_max":0},"shenma":{"rank":0,"uv_min":0,"uv_max":0}}})`)
 	var metric model.Metric

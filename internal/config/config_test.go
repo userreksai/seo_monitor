@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -100,5 +101,24 @@ func TestAPITokenRequiresThirtyTwoBytesWhenEnabled(t *testing.T) {
 	t.Setenv("API_TOKEN", "")
 	if _, err := Load(); err != nil {
 		t.Fatalf("disabled API token should be accepted: %v", err)
+	}
+}
+
+func TestCollectionRetryDelays(t *testing.T) {
+	t.Setenv("COLLECTION_RETRY_DELAYS", "10m, 30m, 1h")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []time.Duration{10 * time.Minute, 30 * time.Minute, time.Hour}
+	if !reflect.DeepEqual(cfg.CollectionRetryDelays, want) {
+		t.Fatalf("CollectionRetryDelays = %v, want %v", cfg.CollectionRetryDelays, want)
+	}
+}
+
+func TestCollectionRetryDelaysRejectsInvalidValue(t *testing.T) {
+	t.Setenv("COLLECTION_RETRY_DELAYS", "10m,never")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid collection retry delay error")
 	}
 }

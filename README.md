@@ -165,6 +165,12 @@ CERTIFICATE_DOMAINS_FILE=certificate_domains.json
 
 默认只有一个采集 Worker，每次请求随机间隔 3–8 秒。即使域名扩到几百个，也建议先保持低并发，避免给来源站造成压力或触发限流。
 
+采集遇到验证码、HTTP 429/5xx、SEO 结果表缺失，或空结果页的动态权重接口失败时，任务会持久化排队重试，不会占用 Worker 原地等待。默认在 10 分钟、30 分钟、1 小时后各重试一次，第 4 次仍失败才标记为最终失败：
+
+```dotenv
+COLLECTION_RETRY_DELAYS=10m,30m,1h
+```
+
 ## 三、服务器源码部署（不使用 Docker）
 
 以下以 Ubuntu/Debian Linux 为例。服务器需安装 Go 1.25 或更高版本、`mongosh`，MongoDB 可以在本机或内网另一台服务器。
