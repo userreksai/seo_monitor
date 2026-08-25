@@ -144,6 +144,21 @@ func TestSnapshotDateBeforeFilterKeepsCutoffDate(t *testing.T) {
 	}
 }
 
+func TestJobReadyFilterHonorsAvailableAt(t *testing.T) {
+	now := time.Date(2026, 8, 25, 3, 0, 0, 0, time.UTC)
+	want := bson.M{
+		"status": "queued",
+		"$or": bson.A{
+			bson.M{"available_at": bson.M{"$exists": false}},
+			bson.M{"available_at": nil},
+			bson.M{"available_at": bson.M{"$lte": now}},
+		},
+	}
+	if got := jobReadyFilter(now); !reflect.DeepEqual(got, want) {
+		t.Fatalf("jobReadyFilter = %#v, want %#v", got, want)
+	}
+}
+
 func TestCertificateStatusMatch(t *testing.T) {
 	now := time.Date(2026, 7, 22, 3, 0, 0, 0, time.UTC)
 	tests := []struct {

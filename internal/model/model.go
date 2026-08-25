@@ -157,6 +157,7 @@ type CollectionJob struct {
 	RequestedBy  string             `bson:"requested_by" json:"requested_by"`
 	AttemptCount int                `bson:"attempt_count" json:"attempt_count"`
 	QueuedAt     time.Time          `bson:"queued_at" json:"queued_at"`
+	AvailableAt  *time.Time         `bson:"available_at,omitempty" json:"available_at,omitempty"`
 	StartedAt    *time.Time         `bson:"started_at,omitempty" json:"started_at,omitempty"`
 	FinishedAt   *time.Time         `bson:"finished_at,omitempty" json:"finished_at,omitempty"`
 	ErrorMessage *string            `bson:"error_message,omitempty" json:"error_message,omitempty"`

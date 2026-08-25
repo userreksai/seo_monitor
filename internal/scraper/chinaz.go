@@ -104,12 +104,13 @@ func (c *Chinaz) fetchComplete(ctx context.Context, domain string) (model.Metric
 		return model.Metric{}, err
 	}
 	rawBodies := [][]byte{pageBody}
+	var rankErr error
 	if secretKey, keyErr := extractSecretKey(pageBody); keyErr == nil {
 		if rankBody, fetchErr := c.fetchData(ctx, "/Rank.ashx", "rankdata", domain, secretKey, pageURL); fetchErr == nil {
 			rawBodies = append(rawBodies, rankBody)
-			// A valid SEO result page may legitimately have no rank result.
-			// Keep the fields parsed from the page (or nil) in that case.
-			_ = mergeRankResponse(rankBody, &metric)
+			rankErr = mergeRankResponse(rankBody, &metric)
+		} else {
+			rankErr = fetchErr
 		}
 
 		if apppcBody, fetchErr := c.fetchData(ctx, "/SiteAPPAndPC.ashx", "", domain, secretKey, pageURL); fetchErr == nil {
@@ -121,9 +122,17 @@ func (c *Chinaz) fetchComplete(ctx context.Context, domain string) (model.Metric
 			rawBodies = append(rawBodies, categoryBody)
 			_ = mergeCategoryResponse(categoryBody, &metric)
 		}
+	} else {
+		rankErr = keyErr
 	}
 	if err := ctx.Err(); err != nil {
 		return model.Metric{}, err
+	}
+	if !hasCoreMetric(metric) {
+		if rankErr != nil {
+			return model.Metric{}, fmt.Errorf("SEO result has no core data and fallback weight fetch failed: %w", rankErr)
+		}
+		return model.Metric{}, errors.New("SEO result has no traffic or weight data")
 	}
 
 	metric.SourceURL = pageURL
@@ -135,6 +144,13 @@ func (c *Chinaz) fetchComplete(ctx context.Context, domain string) (model.Metric
 	metric.RawSHA256 = hex.EncodeToString(hasher.Sum(nil))
 	metric.CollectedAt = time.Now().UTC()
 	return metric, nil
+}
+
+func hasCoreMetric(metric model.Metric) bool {
+	return metric.TrafficMin != nil || metric.TrafficMax != nil ||
+		metric.BaiduPCWeight != nil || metric.BaiduMobile != nil ||
+		metric.SogouWeight != nil || metric.BingWeight != nil ||
+		metric.So360Weight != nil || metric.ShenmaWeight != nil
 }
 
 func (c *Chinaz) fetchWithRetry(ctx context.Context, target, referer string) ([]byte, error) {

@@ -151,7 +151,7 @@ func main() {
 		logger.Error("create scraper", "error", err)
 		os.Exit(1)
 	}
-	workerService := collector.New(st, source, cfg.WorkerCount, cfg.JobPollInterval, logger)
+	workerService := collector.New(st, source, cfg.WorkerCount, cfg.JobPollInterval, cfg.CollectionRetryDelays, logger)
 	workerService.Start(rootCtx)
 	certificateChecker, err := certificate.NewAgentFallbackChecker(
 		certificate.NewTLSChecker(cfg.CertificateTimeout), cfg.CertificateAgentURLs,

@@ -78,6 +78,7 @@ ensureCollection("collection_jobs", {
     requested_by: { enum: ["startup", "scheduler", "manual", "manual-force"] },
     attempt_count: { bsonType: "int", minimum: 0 },
     queued_at: { bsonType: "date" },
+    available_at: { bsonType: "date" },
     started_at: { bsonType: "date" },
     finished_at: { bsonType: "date" },
     error_message: { bsonType: "string" },
@@ -191,6 +192,10 @@ db.domain_daily_metrics.createIndex(
 db.collection_jobs.createIndex(
   { status: 1, queued_at: 1 },
   { name: "ix_jobs_status_queue" }
+);
+db.collection_jobs.createIndex(
+  { status: 1, available_at: 1, queued_at: 1 },
+  { name: "ix_jobs_status_available_queue" }
 );
 db.collection_jobs.createIndex(
   { domain_id: 1, snapshot_date: -1 },
