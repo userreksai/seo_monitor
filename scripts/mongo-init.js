@@ -162,6 +162,45 @@ ensureCollection("auth_sessions", {
   },
 });
 
+ensureCollection("domain_titles", {
+  bsonType: "object",
+  title: "Latest domain title state",
+  required: ["domain_id", "domain", "last_attempt_at", "change_count", "created_at", "updated_at"],
+  properties: {
+    _id: { bsonType: "objectId" },
+    domain_id: { bsonType: "objectId" },
+    domain: { bsonType: "string" },
+    title: { bsonType: "string" },
+    final_url: { bsonType: "string" },
+    status_code: { bsonType: "int", minimum: 200, maximum: 299 },
+    content_type: { bsonType: "string" },
+    check_source: { bsonType: "string" },
+    checked_at: { bsonType: "date" },
+    last_attempt_at: { bsonType: "date" },
+    changed_at: { bsonType: "date" },
+    change_count: { bsonType: ["int", "long"], minimum: 0 },
+    error_message: { bsonType: "string" },
+    created_at: { bsonType: "date" },
+    updated_at: { bsonType: "date" },
+  },
+});
+
+ensureCollection("domain_title_history", {
+  bsonType: "object",
+  title: "Domain title change history",
+  required: ["domain_id", "domain", "old_title", "new_title", "changed_at"],
+  properties: {
+    _id: { bsonType: "objectId" },
+    domain_id: { bsonType: "objectId" },
+    domain: { bsonType: "string" },
+    old_title: { bsonType: "string" },
+    new_title: { bsonType: "string" },
+    final_url: { bsonType: "string" },
+    check_source: { bsonType: "string" },
+    changed_at: { bsonType: "date" },
+  },
+});
+
 db.domains.createIndex(
   { domain: 1 },
   { name: "uq_domains_domain", unique: true }
@@ -230,6 +269,27 @@ db.domain_certificates.createIndex(
 db.domain_certificate_history.createIndex(
   { domain_id: 1, check_date: -1 },
   { name: "ix_certificate_history_domain_date" }
+);
+
+db.domain_titles.createIndex(
+  { domain_id: 1 },
+  { name: "uq_titles_domain_id", unique: true }
+);
+db.domain_titles.createIndex(
+  { domain: 1 },
+  { name: "ix_titles_domain" }
+);
+db.domain_titles.createIndex(
+  { last_attempt_at: -1 },
+  { name: "ix_titles_last_attempt" }
+);
+db.domain_title_history.createIndex(
+  { domain_id: 1, changed_at: -1 },
+  { name: "ix_title_history_domain_changed" }
+);
+db.domain_title_history.createIndex(
+  { changed_at: -1 },
+  { name: "ix_title_history_changed" }
 );
 db.domain_certificate_history.createIndex(
   { check_date: -1 },

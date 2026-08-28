@@ -25,6 +25,7 @@ import (
 type Server struct {
 	store            *store.Store
 	certificates     CertificateRefresher
+	titles           TitleRefresher
 	location         *time.Location
 	apiToken         string
 	authSessionTTL   time.Duration
@@ -40,9 +41,14 @@ type CertificateRefresher interface {
 	Progress() model.TaskProgress
 }
 
-func New(st *store.Store, certificates CertificateRefresher, location *time.Location, apiToken string, authSessionTTL time.Duration, authCookieSecure bool, loginProtection LoginProtectionConfig, origins []string, logger *slog.Logger) http.Handler {
+type TitleRefresher interface {
+	RefreshAsync() bool
+	Progress() model.TaskProgress
+}
+
+func New(st *store.Store, certificates CertificateRefresher, titles TitleRefresher, location *time.Location, apiToken string, authSessionTTL time.Duration, authCookieSecure bool, loginProtection LoginProtectionConfig, origins []string, logger *slog.Logger) http.Handler {
 	server := &Server{
-		store: st, certificates: certificates, location: location, apiToken: apiToken, authSessionTTL: authSessionTTL,
+		store: st, certificates: certificates, titles: titles, location: location, apiToken: apiToken, authSessionTTL: authSessionTTL,
 		authCookieSecure: authCookieSecure,
 		loginLimiter:     newLoginLimiter(loginProtection), trustedProxies: loginProtection.TrustedProxies,
 		allowedOrigins: make(map[string]struct{}, len(origins)), logger: logger,
@@ -65,6 +71,10 @@ func New(st *store.Store, certificates CertificateRefresher, location *time.Loca
 	mux.HandleFunc("POST /api/v1/certificates/refresh", server.refreshCertificates)
 	mux.HandleFunc("GET /api/v1/certificates/progress", server.certificateProgress)
 	mux.HandleFunc("GET /api/v1/certificates/{id}/history", server.certificateHistory)
+	mux.HandleFunc("GET /api/v1/titles", server.listTitles)
+	mux.HandleFunc("POST /api/v1/titles/refresh", server.refreshTitles)
+	mux.HandleFunc("GET /api/v1/titles/progress", server.titleProgress)
+	mux.HandleFunc("GET /api/v1/titles/{id}/history", server.titleHistory)
 	mux.HandleFunc("GET /api/v1/domains/{id}", server.getDomain)
 	mux.HandleFunc("PATCH /api/v1/domains/{id}", server.updateDomain)
 	mux.HandleFunc("DELETE /api/v1/domains/{id}", server.deleteDomain)
@@ -613,6 +623,88 @@ func (s *Server) certificateHistory(w http.ResponseWriter, r *http.Request) {
 		"items": items,
 		"count": len(items),
 	})
+}
+
+func (s *Server) listTitles(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	page := int64(1)
+	limit := int64(50)
+	if raw := r.URL.Query().Get("page"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 1 {
+			writeError(w, http.StatusBadRequest, "page 必须为正整数")
+			return
+		}
+		page = parsed
+	}
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeError(w, http.StatusBadRequest, "limit 必须在 1 到 100 之间")
+			return
+		}
+		limit = parsed
+	}
+	items, total, summary, err := s.store.ListDomainTitles(r.Context(), query, status, page, limit)
+	if errors.Is(err, store.ErrInvalidSearch) {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "查询标题信息失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items, "count": len(items), "total": total,
+		"page": page, "limit": limit, "q": query, "status": status, "summary": summary,
+	})
+}
+
+func (s *Server) refreshTitles(w http.ResponseWriter, _ *http.Request) {
+	if s.titles == nil {
+		writeError(w, http.StatusServiceUnavailable, "标题检测服务未启用")
+		return
+	}
+	if !s.titles.RefreshAsync() {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"started": false, "message": "标题检测任务正在执行", "progress": s.titles.Progress(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"started": true, "message": "标题检测任务已启动", "progress": s.titles.Progress(),
+	})
+}
+
+func (s *Server) titleProgress(w http.ResponseWriter, _ *http.Request) {
+	if s.titles == nil {
+		writeError(w, http.StatusServiceUnavailable, "标题检测服务未启用")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.titles.Progress())
+}
+
+func (s *Server) titleHistory(w http.ResponseWriter, r *http.Request) {
+	id, ok := objectID(w, r)
+	if !ok {
+		return
+	}
+	limit := int64(50)
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeError(w, http.StatusBadRequest, "limit 必须在 1 到 100 之间")
+			return
+		}
+		limit = parsed
+	}
+	items, err := s.store.DomainTitleHistory(r.Context(), id, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "查询标题变更记录失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
 }
 
 func objectID(w http.ResponseWriter, r *http.Request) (primitive.ObjectID, bool) {

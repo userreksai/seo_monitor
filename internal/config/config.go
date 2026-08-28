@@ -51,6 +51,13 @@ type Config struct {
 	CertificateAgentToken       string
 	CertificateAgentTimeout     time.Duration
 	CertificateAgentConcurrency int
+	TitleWorkers                int
+	TitleCron                   string
+	TitleRunOnStart             bool
+	TitleAgentURLs              []string
+	TitleAgentToken             string
+	TitleAgentTimeout           time.Duration
+	TitleAgentConcurrency       int
 }
 
 func Load() (Config, error) {
@@ -104,6 +111,19 @@ func Load() (Config, error) {
 		CertificateAgentToken:       strings.TrimSpace(os.Getenv("CERTIFICATE_AGENT_TOKEN")),
 		CertificateAgentTimeout:     envDuration("CERTIFICATE_AGENT_TIMEOUT", 15*time.Second),
 		CertificateAgentConcurrency: envInt("CERTIFICATE_AGENT_MAX_CONCURRENT", 4),
+		TitleWorkers:                envInt("TITLE_WORKERS", 10),
+		TitleCron:                   env("TITLE_CRON", "15 4 * * *"),
+		TitleRunOnStart:             envBool("TITLE_RUN_ON_START", true),
+		TitleAgentURLs:              splitCSV(os.Getenv("TITLE_AGENT_URLS")),
+		TitleAgentToken:             strings.TrimSpace(os.Getenv("TITLE_AGENT_TOKEN")),
+		TitleAgentTimeout:           envDuration("TITLE_AGENT_TIMEOUT", 15*time.Second),
+		TitleAgentConcurrency:       envInt("TITLE_AGENT_MAX_CONCURRENT", 4),
+	}
+	if len(cfg.TitleAgentURLs) == 0 {
+		cfg.TitleAgentURLs = append([]string(nil), cfg.CertificateAgentURLs...)
+	}
+	if cfg.TitleAgentToken == "" {
+		cfg.TitleAgentToken = cfg.CertificateAgentToken
 	}
 
 	if cfg.WorkerCount < 1 || cfg.WorkerCount > 4 {
@@ -162,6 +182,15 @@ func Load() (Config, error) {
 	}
 	if cfg.CertificateAgentConcurrency < 1 || cfg.CertificateAgentConcurrency > 50 {
 		return Config{}, fmt.Errorf("CERTIFICATE_AGENT_MAX_CONCURRENT 必须在 1 到 50 之间")
+	}
+	if cfg.TitleWorkers < 1 || cfg.TitleWorkers > 50 {
+		return Config{}, fmt.Errorf("TITLE_WORKERS 必须在 1 到 50 之间")
+	}
+	if cfg.TitleAgentTimeout < 500*time.Millisecond || cfg.TitleAgentTimeout > time.Minute {
+		return Config{}, fmt.Errorf("TITLE_AGENT_TIMEOUT 必须在 500ms 到 1m 之间")
+	}
+	if cfg.TitleAgentConcurrency < 1 || cfg.TitleAgentConcurrency > 50 {
+		return Config{}, fmt.Errorf("TITLE_AGENT_MAX_CONCURRENT 必须在 1 到 50 之间")
 	}
 	if _, err := time.LoadLocation(cfg.SnapshotTimezone); err != nil {
 		return Config{}, fmt.Errorf("SNAPSHOT_TIMEZONE 无效: %w", err)

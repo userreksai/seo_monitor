@@ -120,6 +120,61 @@ type CertificateSummary struct {
 	Failed       int64 `bson:"failed" json:"failed"`
 }
 
+// TitleObservation is the validated result returned by a remote Agent. It is
+// not stored directly; Store turns it into the current title and change log.
+type TitleObservation struct {
+	Title       string
+	FinalURL    string
+	StatusCode  int
+	ContentType string
+	CheckedAt   time.Time
+	CheckSource string
+}
+
+// DomainTitle is the latest title state for one active metric domain. A failed
+// attempt keeps the last successful title while updating LastAttemptAt and
+// ErrorMessage.
+type DomainTitle struct {
+	ID            primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
+	DomainID      primitive.ObjectID `bson:"domain_id" json:"domain_id"`
+	Domain        string             `bson:"domain" json:"domain"`
+	Title         *string            `bson:"title,omitempty" json:"title,omitempty"`
+	FinalURL      string             `bson:"final_url,omitempty" json:"final_url,omitempty"`
+	StatusCode    int                `bson:"status_code,omitempty" json:"status_code,omitempty"`
+	ContentType   string             `bson:"content_type,omitempty" json:"content_type,omitempty"`
+	CheckSource   string             `bson:"check_source,omitempty" json:"check_source,omitempty"`
+	CheckedAt     *time.Time         `bson:"checked_at,omitempty" json:"checked_at,omitempty"`
+	LastAttemptAt time.Time          `bson:"last_attempt_at" json:"last_attempt_at"`
+	ChangedAt     *time.Time         `bson:"changed_at,omitempty" json:"changed_at,omitempty"`
+	ChangeCount   int64              `bson:"change_count" json:"change_count"`
+	ErrorMessage  *string            `bson:"error_message,omitempty" json:"error_message,omitempty"`
+	CreatedAt     time.Time          `bson:"created_at" json:"created_at"`
+	UpdatedAt     time.Time          `bson:"updated_at" json:"updated_at"`
+}
+
+type LatestDomainTitle struct {
+	Domain Domain       `bson:"domain_record" json:"domain"`
+	Title  *DomainTitle `bson:"title_record,omitempty" json:"title,omitempty"`
+}
+
+type DomainTitleChange struct {
+	ID          primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
+	DomainID    primitive.ObjectID `bson:"domain_id" json:"domain_id"`
+	Domain      string             `bson:"domain" json:"domain"`
+	OldTitle    string             `bson:"old_title" json:"old_title"`
+	NewTitle    string             `bson:"new_title" json:"new_title"`
+	FinalURL    string             `bson:"final_url,omitempty" json:"final_url,omitempty"`
+	CheckSource string             `bson:"check_source,omitempty" json:"check_source,omitempty"`
+	ChangedAt   time.Time          `bson:"changed_at" json:"changed_at"`
+}
+
+type TitleSummary struct {
+	Total   int64 `bson:"total" json:"total"`
+	Checked int64 `bson:"checked" json:"checked"`
+	Changed int64 `bson:"changed" json:"changed"`
+	Failed  int64 `bson:"failed" json:"failed"`
+}
+
 // TaskProgress is the in-memory progress snapshot for one full certificate
 // refresh. The latest completed snapshot remains available until the next run.
 type TaskProgress struct {

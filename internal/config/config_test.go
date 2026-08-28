@@ -122,3 +122,31 @@ func TestCollectionRetryDelaysRejectsInvalidValue(t *testing.T) {
 		t.Fatal("expected invalid collection retry delay error")
 	}
 }
+
+func TestTitleAgentDefaultsToCertificateAgent(t *testing.T) {
+	t.Setenv("CERTIFICATE_AGENT_URLS", "http://127.0.0.1:8002")
+	t.Setenv("CERTIFICATE_AGENT_TOKEN", "shared-token")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.TitleAgentURLs) != 1 || cfg.TitleAgentURLs[0] != "http://127.0.0.1:8002" {
+		t.Fatalf("TitleAgentURLs = %#v", cfg.TitleAgentURLs)
+	}
+	if cfg.TitleAgentToken != "shared-token" {
+		t.Fatalf("TitleAgentToken = %q", cfg.TitleAgentToken)
+	}
+}
+
+func TestTitleScheduleConfiguration(t *testing.T) {
+	t.Setenv("TITLE_AGENT_URLS", "http://127.0.0.1:8002")
+	t.Setenv("TITLE_CRON", "0 */6 * * *")
+	t.Setenv("TITLE_RUN_ON_START", "false")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TitleCron != "0 */6 * * *" || cfg.TitleRunOnStart {
+		t.Fatalf("unexpected title schedule: cron=%q runOnStart=%v", cfg.TitleCron, cfg.TitleRunOnStart)
+	}
+}

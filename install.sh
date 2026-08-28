@@ -210,6 +210,13 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     printf 'CERTIFICATE_AGENT_TOKEN=\n'
     printf 'CERTIFICATE_AGENT_TIMEOUT=15s\n'
     printf 'CERTIFICATE_AGENT_MAX_CONCURRENT=4\n'
+    printf 'TITLE_AGENT_URLS=\n'
+    printf 'TITLE_AGENT_TOKEN=\n'
+    printf 'TITLE_AGENT_TIMEOUT=15s\n'
+    printf 'TITLE_AGENT_MAX_CONCURRENT=4\n'
+    printf 'TITLE_WORKERS=10\n'
+    printf 'TITLE_CRON="15 4 * * *"\n'
+    printf 'TITLE_RUN_ON_START=true\n'
   } >"$INSTALL_DIR/.env"
   log "Created $INSTALL_DIR/.env; API token authentication is disabled unless API_TOKEN was supplied"
 else
@@ -236,6 +243,13 @@ else
       auth_login_failure_window_seen = 0
       auth_login_lockout_seen = 0
       auth_trusted_proxy_cidrs_seen = 0
+      title_agent_urls_seen = 0
+      title_agent_token_seen = 0
+      title_agent_timeout_seen = 0
+      title_agent_concurrency_seen = 0
+      title_workers_seen = 0
+      title_cron_seen = 0
+      title_run_on_start_seen = 0
     }
     /^HTTP_ADDR=/ {
       if (!http_updated) {
@@ -266,6 +280,13 @@ else
     /^AUTH_LOGIN_FAILURE_WINDOW=/ { if (!auth_login_failure_window_seen) { print; auth_login_failure_window_seen = 1 }; next }
     /^AUTH_LOGIN_LOCKOUT=/ { if (!auth_login_lockout_seen) { print; auth_login_lockout_seen = 1 }; next }
     /^AUTH_TRUSTED_PROXY_CIDRS=/ { if (!auth_trusted_proxy_cidrs_seen) { print; auth_trusted_proxy_cidrs_seen = 1 }; next }
+    /^TITLE_AGENT_URLS=/ { title_agent_urls_seen = 1 }
+    /^TITLE_AGENT_TOKEN=/ { title_agent_token_seen = 1 }
+    /^TITLE_AGENT_TIMEOUT=/ { title_agent_timeout_seen = 1 }
+    /^TITLE_AGENT_MAX_CONCURRENT=/ { title_agent_concurrency_seen = 1 }
+    /^TITLE_WORKERS=/ { title_workers_seen = 1 }
+    /^TITLE_CRON=/ { title_cron_seen = 1 }
+    /^TITLE_RUN_ON_START=/ { title_run_on_start_seen = 1 }
     { print }
     END {
       if (!http_updated) print "HTTP_ADDR=127.0.0.1:10001"
@@ -284,6 +305,13 @@ else
       if (!auth_login_failure_window_seen) print "AUTH_LOGIN_FAILURE_WINDOW=15m"
       if (!auth_login_lockout_seen) print "AUTH_LOGIN_LOCKOUT=15m"
       if (!auth_trusted_proxy_cidrs_seen) print "AUTH_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128"
+      if (!title_agent_urls_seen) print "TITLE_AGENT_URLS="
+      if (!title_agent_token_seen) print "TITLE_AGENT_TOKEN="
+      if (!title_agent_timeout_seen) print "TITLE_AGENT_TIMEOUT=15s"
+      if (!title_agent_concurrency_seen) print "TITLE_AGENT_MAX_CONCURRENT=4"
+      if (!title_workers_seen) print "TITLE_WORKERS=10"
+      if (!title_cron_seen) print "TITLE_CRON=\"15 4 * * *\""
+      if (!title_run_on_start_seen) print "TITLE_RUN_ON_START=true"
     }
   ' "$INSTALL_DIR/.env" >"$ENV_TEMP"
   mv "$ENV_TEMP" "$INSTALL_DIR/.env"

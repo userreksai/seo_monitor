@@ -69,6 +69,8 @@ type Store struct {
 	certificateHistory *mongo.Collection
 	users              *mongo.Collection
 	sessions           *mongo.Collection
+	titles             *mongo.Collection
+	titleHistory       *mongo.Collection
 }
 
 // CleanupResult reports how many records were removed from each retained collection.
@@ -97,6 +99,8 @@ func New(ctx context.Context, uri, database string) (*Store, error) {
 		certificateHistory: db.Collection("domain_certificate_history"),
 		users:              db.Collection("users"),
 		sessions:           db.Collection("auth_sessions"),
+		titles:             db.Collection("domain_titles"),
+		titleHistory:       db.Collection("domain_title_history"),
 	}, nil
 }
 
@@ -156,6 +160,21 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 	})
 	if err != nil {
 		return fmt.Errorf("create certificate history indexes: %w", err)
+	}
+	_, err = s.titles.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "domain_id", Value: 1}}, Options: options.Index().SetName("uq_titles_domain_id").SetUnique(true)},
+		{Keys: bson.D{{Key: "domain", Value: 1}}, Options: options.Index().SetName("ix_titles_domain")},
+		{Keys: bson.D{{Key: "last_attempt_at", Value: -1}}, Options: options.Index().SetName("ix_titles_last_attempt")},
+	})
+	if err != nil {
+		return fmt.Errorf("create title indexes: %w", err)
+	}
+	_, err = s.titleHistory.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "domain_id", Value: 1}, {Key: "changed_at", Value: -1}}, Options: options.Index().SetName("ix_title_history_domain_changed")},
+		{Keys: bson.D{{Key: "changed_at", Value: -1}}, Options: options.Index().SetName("ix_title_history_changed")},
+	})
+	if err != nil {
+		return fmt.Errorf("create title history indexes: %w", err)
 	}
 	return nil
 }
@@ -973,6 +992,218 @@ func certificateExpiredCondition(now time.Time) bson.M {
 		bson.M{"$eq": bson.A{bson.M{"$type": "$certificate.expires_at"}, "date"}},
 		bson.M{"$lt": bson.A{"$certificate.expires_at", now}},
 	}}
+}
+
+// SaveDomainTitle replaces the current title fields on every successful check.
+// A history record is appended only when a previously known title changes.
+func (s *Store) SaveDomainTitle(ctx context.Context, domain model.Domain, observation model.TitleObservation) (bool, error) {
+	var current model.DomainTitle
+	err := s.titles.FindOne(ctx, bson.M{"domain_id": domain.ID}).Decode(&current)
+	if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
+		return false, err
+	}
+
+	checkedAt := observation.CheckedAt.UTC()
+	if checkedAt.IsZero() {
+		checkedAt = time.Now().UTC()
+	}
+	now := time.Now().UTC()
+	title := observation.Title
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		item := model.DomainTitle{
+			ID: primitive.NewObjectID(), DomainID: domain.ID, Domain: domain.Domain,
+			Title: &title, FinalURL: observation.FinalURL, StatusCode: observation.StatusCode,
+			ContentType: observation.ContentType, CheckSource: observation.CheckSource,
+			CheckedAt: &checkedAt, LastAttemptAt: now, ChangedAt: &checkedAt,
+			ChangeCount: 0, CreatedAt: now, UpdatedAt: now,
+		}
+		_, insertErr := s.titles.InsertOne(ctx, item)
+		return false, insertErr
+	}
+
+	changed := current.Title != nil && *current.Title != title
+	set := bson.M{
+		"domain": domain.Domain, "title": title, "final_url": observation.FinalURL,
+		"status_code": observation.StatusCode, "content_type": observation.ContentType,
+		"check_source": observation.CheckSource, "checked_at": checkedAt,
+		"last_attempt_at": now, "updated_at": now,
+	}
+	update := bson.M{"$set": set, "$unset": bson.M{"error_message": ""}}
+	if current.Title == nil {
+		set["changed_at"] = checkedAt
+	}
+	if changed {
+		set["changed_at"] = checkedAt
+		update["$inc"] = bson.M{"change_count": 1}
+	}
+	if _, err := s.titles.UpdateOne(ctx, bson.M{"_id": current.ID}, update); err != nil {
+		return false, err
+	}
+	if !changed {
+		return false, nil
+	}
+	_, err = s.titleHistory.InsertOne(ctx, model.DomainTitleChange{
+		ID: primitive.NewObjectID(), DomainID: domain.ID, Domain: domain.Domain,
+		OldTitle: *current.Title, NewTitle: title, FinalURL: observation.FinalURL,
+		CheckSource: observation.CheckSource, ChangedAt: checkedAt,
+	})
+	return true, err
+}
+
+// SaveDomainTitleFailure records every failed attempt without discarding the
+// last successfully observed title.
+func (s *Store) SaveDomainTitleFailure(ctx context.Context, domain model.Domain, checkedAt time.Time, cause error) error {
+	if checkedAt.IsZero() {
+		checkedAt = time.Now().UTC()
+	}
+	message := strings.TrimSpace(cause.Error())
+	characters := []rune(message)
+	if len(characters) > 2000 {
+		message = string(characters[:2000])
+	}
+	now := time.Now().UTC()
+	_, err := s.titles.UpdateOne(ctx, bson.M{"domain_id": domain.ID}, bson.M{
+		"$set": bson.M{
+			"domain": domain.Domain, "last_attempt_at": checkedAt.UTC(),
+			"error_message": message, "updated_at": now,
+		},
+		"$setOnInsert": bson.M{
+			"_id": primitive.NewObjectID(), "domain_id": domain.ID,
+			"change_count": int64(0), "created_at": now,
+		},
+	}, options.Update().SetUpsert(true))
+	return err
+}
+
+// ListDomainTitles joins active metric domains with their latest title state.
+func (s *Store) ListDomainTitles(ctx context.Context, query, status string, page, limit int64) ([]model.LatestDomainTitle, int64, model.TitleSummary, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	statusMatch, err := titleStatusMatch(status)
+	if err != nil {
+		return nil, 0, model.TitleSummary{}, err
+	}
+
+	pipeline := mongo.Pipeline{
+		bson.D{{Key: "$match", Value: bson.M{"active": true}}},
+		bson.D{{Key: "$lookup", Value: bson.M{
+			"from": "domain_titles", "localField": "_id", "foreignField": "domain_id", "as": "title_docs",
+		}}},
+		bson.D{{Key: "$set", Value: bson.M{
+			"title_record": bson.M{"$ifNull": bson.A{bson.M{"$arrayElemAt": bson.A{"$title_docs", 0}}, nil}},
+		}}},
+	}
+	if query = strings.TrimSpace(query); query != "" {
+		pattern := primitive.Regex{Pattern: regexp.QuoteMeta(query), Options: "i"}
+		pipeline = append(pipeline, bson.D{{Key: "$match", Value: bson.M{"$or": bson.A{
+			bson.M{"domain": pattern}, bson.M{"display_name": pattern}, bson.M{"title_record.title": pattern},
+		}}}})
+	}
+
+	itemsPipeline := mongo.Pipeline{}
+	totalPipeline := mongo.Pipeline{}
+	if len(statusMatch) > 0 {
+		itemsPipeline = append(itemsPipeline, bson.D{{Key: "$match", Value: statusMatch}})
+		totalPipeline = append(totalPipeline, bson.D{{Key: "$match", Value: statusMatch}})
+	}
+	itemsPipeline = append(itemsPipeline,
+		bson.D{{Key: "$sort", Value: bson.D{{Key: "domain", Value: 1}}}},
+		bson.D{{Key: "$skip", Value: (page - 1) * limit}},
+		bson.D{{Key: "$limit", Value: limit}},
+		bson.D{{Key: "$project", Value: bson.D{
+			{Key: "_id", Value: 0},
+			{Key: "domain_record", Value: bson.D{
+				{Key: "_id", Value: "$_id"}, {Key: "domain", Value: "$domain"},
+				{Key: "display_name", Value: "$display_name"}, {Key: "active", Value: "$active"},
+				{Key: "created_at", Value: "$created_at"}, {Key: "updated_at", Value: "$updated_at"},
+				{Key: "archived_at", Value: "$archived_at"},
+			}},
+			{Key: "title_record", Value: "$title_record"},
+		}}},
+	)
+	totalPipeline = append(totalPipeline, bson.D{{Key: "$count", Value: "value"}})
+	pipeline = append(pipeline, bson.D{{Key: "$facet", Value: bson.D{
+		{Key: "items", Value: itemsPipeline},
+		{Key: "total", Value: totalPipeline},
+		{Key: "summary", Value: mongo.Pipeline{
+			bson.D{{Key: "$group", Value: bson.M{
+				"_id": nil, "total": bson.M{"$sum": 1},
+				"checked": bson.M{"$sum": bson.M{"$cond": bson.A{
+					bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{"$title_record.title", nil}}, nil}}, 1, 0,
+				}}},
+				"changed": bson.M{"$sum": bson.M{"$cond": bson.A{
+					bson.M{"$gt": bson.A{bson.M{"$ifNull": bson.A{"$title_record.change_count", 0}}, 0}}, 1, 0,
+				}}},
+				"failed": bson.M{"$sum": bson.M{"$cond": bson.A{
+					bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{"$title_record.error_message", ""}}, ""}}, 1, 0,
+				}}},
+			}}},
+		}},
+	}}})
+
+	cursor, err := s.domains.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, 0, model.TitleSummary{}, err
+	}
+	defer cursor.Close(ctx)
+	var result []struct {
+		Items []model.LatestDomainTitle `bson:"items"`
+		Total []struct {
+			Value int64 `bson:"value"`
+		} `bson:"total"`
+		Summary []model.TitleSummary `bson:"summary"`
+	}
+	if err := cursor.All(ctx, &result); err != nil {
+		return nil, 0, model.TitleSummary{}, err
+	}
+	if len(result) == 0 {
+		return []model.LatestDomainTitle{}, 0, model.TitleSummary{}, nil
+	}
+	total := int64(0)
+	if len(result[0].Total) > 0 {
+		total = result[0].Total[0].Value
+	}
+	summary := model.TitleSummary{}
+	if len(result[0].Summary) > 0 {
+		summary = result[0].Summary[0]
+	}
+	return result[0].Items, total, summary, nil
+}
+
+func titleStatusMatch(status string) (bson.D, error) {
+	switch strings.TrimSpace(status) {
+	case "":
+		return nil, nil
+	case "checked":
+		return bson.D{{Key: "title_record.title", Value: bson.M{"$exists": true, "$ne": nil}}}, nil
+	case "changed":
+		return bson.D{{Key: "title_record.change_count", Value: bson.M{"$gt": 0}}}, nil
+	case "failed":
+		return bson.D{{Key: "title_record.error_message", Value: bson.M{"$exists": true, "$type": "string", "$ne": ""}}}, nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported title status %q", ErrInvalidSearch, status)
+	}
+}
+
+func (s *Store) DomainTitleHistory(ctx context.Context, domainID primitive.ObjectID, limit int64) ([]model.DomainTitleChange, error) {
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	cursor, err := s.titleHistory.Find(ctx, bson.M{"domain_id": domainID},
+		options.Find().SetSort(bson.D{{Key: "changed_at", Value: -1}}).SetLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	var items []model.DomainTitleChange
+	if err := cursor.All(ctx, &items); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 func (s *Store) ListJobs(ctx context.Context, status string, limit int64) ([]model.CollectionJob, error) {

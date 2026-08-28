@@ -20,6 +20,7 @@ import (
 	"seo-monitor/internal/httpapi"
 	"seo-monitor/internal/scraper"
 	"seo-monitor/internal/store"
+	"seo-monitor/internal/title"
 )
 
 func main() {
@@ -172,6 +173,28 @@ func main() {
 		certificateChecker, cfg.CertificateWorkers, location, cfg.CertificateRetentionDays, cfg.CertificateDomainsFile, logger)
 	certificateService.RefreshAsync()
 
+	var titleService *title.Service
+	if len(cfg.TitleAgentURLs) == 0 {
+		logger.Warn("title checks disabled; configure TITLE_AGENT_URLS or CERTIFICATE_AGENT_URLS")
+	} else {
+		titleChecker, titleErr := title.NewAgentChecker(cfg.TitleAgentURLs, cfg.TitleAgentToken,
+			cfg.TitleAgentTimeout, cfg.TitleAgentConcurrency)
+		if titleErr != nil {
+			logger.Error("create title Agent checker", "error", titleErr)
+			os.Exit(1)
+		}
+		titleService = title.NewService(rootCtx, st, titleChecker, cfg.TitleWorkers, logger)
+		logger.Info("title checks enabled through Agents", "agents", len(cfg.TitleAgentURLs),
+			"workers", cfg.TitleWorkers, "timeout", cfg.TitleAgentTimeout,
+			"max_concurrent_per_agent", cfg.TitleAgentConcurrency)
+		if cfg.TitleAgentToken == "" {
+			logger.Warn("title Agent token is empty; configure TITLE_AGENT_TOKEN in production")
+		}
+		if cfg.TitleRunOnStart {
+			titleService.RefreshAsync()
+		}
+	}
+
 	queueToday := func(requestedBy string) {
 		if requestedBy == "scheduler" {
 			cleanupExpiredData("scheduler")
@@ -201,12 +224,18 @@ func main() {
 		logger.Error("invalid CERTIFICATE_CRON", "value", cfg.CertificateCron, "error", err)
 		os.Exit(1)
 	}
+	if titleService != nil {
+		if _, err := scheduler.AddFunc(cfg.TitleCron, func() { titleService.RefreshAsync() }); err != nil {
+			logger.Error("invalid TITLE_CRON", "value", cfg.TitleCron, "error", err)
+			os.Exit(1)
+		}
+	}
 	scheduler.Start()
 	defer scheduler.Stop()
 
 	httpServer := &http.Server{
 		Addr: cfg.HTTPAddr,
-		Handler: httpapi.New(st, certificateService, location, cfg.APIToken, cfg.AuthSessionTTL, cfg.AuthCookieSecure, httpapi.LoginProtectionConfig{
+		Handler: httpapi.New(st, certificateService, titleService, location, cfg.APIToken, cfg.AuthSessionTTL, cfg.AuthCookieSecure, httpapi.LoginProtectionConfig{
 			IPMaxFailures: cfg.AuthLoginIPMaxFailures, PairMaxFailures: cfg.AuthLoginPairMaxFailures,
 			FailureWindow: cfg.AuthLoginFailureWindow, Lockout: cfg.AuthLoginLockout,
 			TrustedProxies: cfg.AuthTrustedProxyCIDRs,

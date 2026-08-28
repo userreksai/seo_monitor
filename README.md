@@ -9,12 +9,13 @@
 - APPPC PC 排名、网站分类、反向链接数
 - 注册人/机构、注册人邮箱、域名年龄、预计域名年龄天数、过期日期
 - 数据来源、采集时间、原始页面 SHA-256（便于审计和排查页面变化）
+- 由 SituationAwareness Agent 获取的网页标题、最终 URL、检测时间、检测来源和标题变更记录
 
 ## 为什么继续使用 MongoDB
 
 你已经有 MongoDB，几百个域名每天一次的规模对 MongoDB 很小。服务默认保留当天及往前 60 个自然日的数据。趋势图查询使用 `{domain_id: 1, snapshot_date: -1}` 索引；同一域名同一天只保留一条数据，由 `{domain: 1, snapshot_date: 1}` 唯一索引强制保证。
 
-新库包含五个集合：
+新库包含九个集合：
 
 | 集合 | 用途 |
 | --- | --- |
@@ -23,6 +24,10 @@
 | `collection_jobs` | 持久任务队列、失败原因和执行状态 |
 | `domain_certificates` | 每个启用域名最近一次 TLS 证书检测结果 |
 | `domain_certificate_history` | TLS 证书每次轮询记录和失败原因 |
+| `domain_titles` | 每个启用域名当前标题；每次检测执行 update，失败时保留最后一次成功标题 |
+| `domain_title_history` | 标题内容实际变化时写入的原标题、新标题和变更时间 |
+| `users` | 后台登录账号、角色和密码哈希 |
+| `auth_sessions` | 后台登录会话及过期时间 |
 
 API 删除域名时执行软删除（`active=false`），不会删除历史趋势。应用使用 MongoDB 原子抢占任务；重启后卡在 `running` 的旧任务会重新排队。
 
@@ -57,6 +62,8 @@ db.domains.getIndexes()
 db.domain_daily_metrics.getIndexes()
 db.domain_certificates.getIndexes()
 db.domain_certificate_history.getIndexes()
+db.domain_titles.getIndexes()
+db.domain_title_history.getIndexes()
 db.getCollectionInfos().forEach(x => printjson({name: x.name, validator: x.options.validator}))
 ```
 
@@ -78,6 +85,38 @@ CERTIFICATE_AGENT_MAX_CONCURRENT=4
 ```
 
 主控始终先执行本地检测；本地失败后才会从不同 Agent 开始轮询，任一 Agent 成功即把证书、实际连接地址和 Agent 名称写入 `domain_certificates`。每个 Agent 的并发由 `CERTIFICATE_AGENT_MAX_CONCURRENT` 单独限制，避免批量检测时触发节点的 429 保护。所有节点失败时，错误信息会同时保留主控及各 Agent 的失败原因。未配置 `CERTIFICATE_AGENT_URLS` 时行为与以前完全一致。Agent 的 `AGENT_MAX_TIMEOUT` 必须不小于 `CERTIFICATE_AGENT_TIMEOUT`，`AGENT_MAX_CONCURRENT` 应不小于主控的单 Agent 并发值，并建议通过防火墙只允许主控访问 Agent 的 8002 端口。
+
+### 网页标题检测
+
+标题检测只通过现有 SituationAwareness Agent 的 8002 端口执行，不会由 Master 直接访问目标域名，也不会新增 Agent 端口。Master 并发发送 `type=title` 任务，校验任务 ID、任务状态、2xx HTTP 状态、最终 URL 和非空标题后，更新同一 `seo_monitor` 数据库中的 `domain_titles`。标题与上次不同才会向 `domain_title_history` 新增一条变更记录；标题相同时仍会更新检测时间、最终 URL 和检测来源。
+
+标题检测默认使用所有启用的权重域名。下面的配置每天在 `SNAPSHOT_TIMEZONE` 的 04:15 检测，并在服务启动时检测一次：
+
+```dotenv
+# 留空时分别复用 CERTIFICATE_AGENT_URLS 和 CERTIFICATE_AGENT_TOKEN
+TITLE_AGENT_URLS=
+TITLE_AGENT_TOKEN=
+TITLE_AGENT_TIMEOUT=15s
+TITLE_AGENT_MAX_CONCURRENT=4
+TITLE_WORKERS=10
+TITLE_CRON="15 4 * * *"
+TITLE_RUN_ON_START=true
+```
+
+如果证书 Agent 地址和令牌已经配置，最少只需增加以下内容，其余标题配置会使用默认值：
+
+```dotenv
+TITLE_CRON="15 4 * * *"
+```
+
+需要为标题使用单独的 Agent 时，再填写 `TITLE_AGENT_URLS` 和 `TITLE_AGENT_TOKEN`。Agent 端可选配置 `AGENT_TITLE_MAX_RESPONSE_BYTES=2097152`，并继续监听原来的 `AGENT_LISTEN_ADDR=:8002`。
+
+Master 提供以下接口供 `seo-monitor-web.service` 的 `/titles` 页面使用：
+
+- `GET /api/v1/titles`：分页查询域名、当前标题、检测时间和失败状态。
+- `POST /api/v1/titles/refresh`：立即并发检测全部启用域名。
+- `GET /api/v1/titles/progress`：查询全量检测进度。
+- `GET /api/v1/titles/{domain_id}/history`：查询标题变更记录。
 
 如果 MongoDB 已启用权限控制，建议给应用创建只操作新库的账号：
 
