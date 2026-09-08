@@ -19,11 +19,12 @@ function ensureCollection(name, validator) {
 ensureCollection("domains", {
   bsonType: "object",
   title: "Monitored domain",
-  required: ["domain", "active", "created_at", "updated_at"],
+  required: ["domain", "tag", "active", "created_at", "updated_at"],
   properties: {
     _id: { bsonType: "objectId" },
     domain: { bsonType: "string", description: "小写、去协议后的域名" },
     display_name: { bsonType: "string" },
+    tag: { bsonType: "string", maxLength: 50 },
     active: { bsonType: "bool" },
     certificate_active: { bsonType: "bool" },
     created_at: { bsonType: "date" },

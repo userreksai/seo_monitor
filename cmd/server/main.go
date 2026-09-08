@@ -62,6 +62,15 @@ func main() {
 		}
 	}
 
+	schemaCtx, schemaCancel := context.WithTimeout(rootCtx, 30*time.Second)
+	backfilledTags, schemaErr := st.InitializeDomainSchema(schemaCtx)
+	schemaCancel()
+	if schemaErr != nil {
+		logger.Error("initialize domain database fields", "error", schemaErr)
+		os.Exit(1)
+	}
+	logger.Info("domain database fields ready", "tags_backfilled", backfilledTags)
+
 	cleanupExpiredData := func(trigger string) {
 		cutoff := collector.RetentionCutoff(time.Now(), location, cfg.RetentionDays)
 		ctx, cancel := context.WithTimeout(rootCtx, 2*time.Minute)

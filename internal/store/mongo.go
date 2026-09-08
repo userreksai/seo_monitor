@@ -42,6 +42,7 @@ type latestSearchField struct {
 var latestSearchFields = map[string]latestSearchField{
 	"domain":              {Path: "domain"},
 	"display_name":        {Path: "display_name"},
+	"tag":                 {Path: "tag"},
 	"site_category":       {Path: "metric.site_category"},
 	"registrant_name":     {Path: "metric.registrant_name"},
 	"registrant_email":    {Path: "metric.registrant_email"},
@@ -358,12 +359,29 @@ var dummyPasswordHash = func() []byte {
 	return hash
 }()
 
-func (s *Store) CreateDomain(ctx context.Context, domain string, displayName *string) (model.Domain, error) {
+// InitializeDomainSchema is safe to run on every service startup. MongoDB is
+// schemaless, so this backfills the tag field for records created by older
+// versions before API traffic or scheduled jobs begin.
+func (s *Store) InitializeDomainSchema(ctx context.Context) (int64, error) {
+	result, err := s.domains.UpdateMany(ctx, bson.M{
+		"$or": bson.A{
+			bson.M{"tag": bson.M{"$exists": false}},
+			bson.M{"tag": nil},
+		},
+	}, bson.M{"$set": bson.M{"tag": ""}})
+	if err != nil {
+		return 0, fmt.Errorf("backfill domain tags: %w", err)
+	}
+	return result.ModifiedCount, nil
+}
+
+func (s *Store) CreateDomain(ctx context.Context, domain string, displayName *string, tag string) (model.Domain, error) {
 	now := time.Now().UTC()
 	item := model.Domain{
 		ID:          primitive.NewObjectID(),
 		Domain:      domain,
 		DisplayName: displayName,
+		Tag:         tag,
 		Active:      true,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -386,7 +404,7 @@ func (s *Store) ActivateMetricDomain(ctx context.Context, domain string) (bool, 
 		"$set":   bson.M{"active": true, "updated_at": now},
 		"$unset": bson.M{"archived_at": ""},
 		"$setOnInsert": bson.M{
-			"_id": primitive.NewObjectID(), "domain": domain, "created_at": now,
+			"_id": primitive.NewObjectID(), "domain": domain, "tag": "", "created_at": now,
 		},
 	}, options.Update().SetUpsert(true))
 	if err != nil {
@@ -408,7 +426,7 @@ func (s *Store) SyncCertificateDomains(ctx context.Context, domains []string) er
 		if _, err := s.domains.UpdateOne(ctx, bson.M{"domain": domain}, bson.M{
 			"$set": bson.M{"certificate_active": true, "updated_at": now},
 			"$setOnInsert": bson.M{
-				"_id": primitive.NewObjectID(), "domain": domain, "active": false, "created_at": now,
+				"_id": primitive.NewObjectID(), "domain": domain, "tag": "", "active": false, "created_at": now,
 			},
 		}, options.Update().SetUpsert(true)); err != nil {
 			return err
@@ -466,6 +484,9 @@ func (s *Store) UpdateDomain(ctx context.Context, id primitive.ObjectID, patch m
 		} else {
 			set["display_name"] = patch.DisplayName
 		}
+	}
+	if patch.HasTag {
+		set["tag"] = patch.Tag
 	}
 	if patch.HasActive {
 		set["active"] = patch.Active
@@ -856,6 +877,7 @@ func (s *Store) ListCertificates(ctx context.Context, query, status string, page
 		match["$or"] = bson.A{
 			bson.M{"domain": pattern},
 			bson.M{"display_name": pattern},
+			bson.M{"tag": pattern},
 		}
 	}
 
@@ -875,6 +897,7 @@ func (s *Store) ListCertificates(ctx context.Context, query, status string, page
 				{Key: "_id", Value: "$_id"},
 				{Key: "domain", Value: "$domain"},
 				{Key: "display_name", Value: "$display_name"},
+				{Key: "tag", Value: "$tag"},
 				{Key: "active", Value: "$active"},
 				{Key: "certificate_active", Value: "$certificate_active"},
 				{Key: "created_at", Value: "$created_at"},
@@ -1100,7 +1123,7 @@ func (s *Store) ListDomainTitles(ctx context.Context, query, status string, page
 	if query = strings.TrimSpace(query); query != "" {
 		pattern := primitive.Regex{Pattern: regexp.QuoteMeta(query), Options: "i"}
 		pipeline = append(pipeline, bson.D{{Key: "$match", Value: bson.M{"$or": bson.A{
-			bson.M{"domain": pattern}, bson.M{"display_name": pattern}, bson.M{"title_record.title": pattern},
+			bson.M{"domain": pattern}, bson.M{"display_name": pattern}, bson.M{"tag": pattern}, bson.M{"title_record.title": pattern},
 		}}}})
 	}
 
@@ -1118,7 +1141,7 @@ func (s *Store) ListDomainTitles(ctx context.Context, query, status string, page
 			{Key: "_id", Value: 0},
 			{Key: "domain_record", Value: bson.D{
 				{Key: "_id", Value: "$_id"}, {Key: "domain", Value: "$domain"},
-				{Key: "display_name", Value: "$display_name"}, {Key: "active", Value: "$active"},
+				{Key: "display_name", Value: "$display_name"}, {Key: "tag", Value: "$tag"}, {Key: "active", Value: "$active"},
 				{Key: "created_at", Value: "$created_at"}, {Key: "updated_at", Value: "$updated_at"},
 				{Key: "archived_at", Value: "$archived_at"},
 			}},
@@ -1379,6 +1402,7 @@ func (s *Store) SearchLatest(ctx context.Context, field, query, status, sortFiel
 						{Key: "_id", Value: "$_id"},
 						{Key: "domain", Value: "$domain"},
 						{Key: "display_name", Value: "$display_name"},
+						{Key: "tag", Value: "$tag"},
 						{Key: "active", Value: "$active"},
 						{Key: "created_at", Value: "$created_at"},
 						{Key: "updated_at", Value: "$updated_at"},

@@ -12,6 +12,7 @@ type Domain struct {
 	ID                primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	Domain            string             `bson:"domain" json:"domain"`
 	DisplayName       *string            `bson:"display_name,omitempty" json:"display_name,omitempty"`
+	Tag               string             `bson:"tag" json:"tag"`
 	Active            bool               `bson:"active" json:"active"`
 	CertificateActive bool               `bson:"certificate_active,omitempty" json:"certificate_active,omitempty"`
 	CreatedAt         time.Time          `bson:"created_at" json:"created_at"`
@@ -22,6 +23,8 @@ type Domain struct {
 type DomainPatch struct {
 	DisplayName    string
 	HasDisplayName bool
+	Tag            string
+	HasTag         bool
 	Active         bool
 	HasActive      bool
 }

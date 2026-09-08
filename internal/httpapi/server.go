@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
@@ -231,6 +232,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 type createDomainRequest struct {
 	Domain      string  `json:"domain"`
 	DisplayName *string `json:"display_name"`
+	Tag         string  `json:"tag"`
 }
 
 func (s *Server) createDomain(w http.ResponseWriter, r *http.Request) {
@@ -245,7 +247,12 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.DisplayName = cleanOptionalString(request.DisplayName)
-	item, err := s.store.CreateDomain(r.Context(), domain, request.DisplayName)
+	tag, err := normalizeDomainTag(request.Tag)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	item, err := s.store.CreateDomain(r.Context(), domain, request.DisplayName, tag)
 	if errors.Is(err, store.ErrConflict) {
 		writeError(w, http.StatusConflict, "域名已存在")
 		return
@@ -281,6 +288,7 @@ func (s *Server) getDomain(w http.ResponseWriter, r *http.Request) {
 
 type updateDomainRequest struct {
 	DisplayName *string `json:"display_name"`
+	Tag         *string `json:"tag"`
 	Active      *bool   `json:"active"`
 }
 
@@ -298,6 +306,15 @@ func (s *Server) updateDomain(w http.ResponseWriter, r *http.Request) {
 	if request.DisplayName != nil {
 		patch.HasDisplayName = true
 		patch.DisplayName = strings.TrimSpace(*request.DisplayName)
+	}
+	if request.Tag != nil {
+		tag, err := normalizeDomainTag(*request.Tag)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		patch.HasTag = true
+		patch.Tag = tag
 	}
 	if request.Active != nil {
 		patch.HasActive = true
@@ -354,7 +371,7 @@ func (s *Server) bulkDomains(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		seen[domain] = struct{}{}
-		item, err := s.store.CreateDomain(r.Context(), domain, nil)
+		item, err := s.store.CreateDomain(r.Context(), domain, nil, "")
 		if errors.Is(err, store.ErrConflict) {
 			skipped = append(skipped, domain)
 			continue
@@ -762,6 +779,14 @@ func cleanOptionalString(value *string) *string {
 		return nil
 	}
 	return &trimmed
+}
+
+func normalizeDomainTag(value string) (string, error) {
+	tag := strings.TrimSpace(value)
+	if utf8.RuneCountInString(tag) > 50 {
+		return "", errors.New("标签不能超过 50 个字符")
+	}
+	return tag, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
