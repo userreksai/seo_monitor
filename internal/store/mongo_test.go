@@ -39,6 +39,18 @@ func TestLatestSearchMatchText(t *testing.T) {
 	}
 }
 
+func TestLatestSearchMatchSupportsTag(t *testing.T) {
+	t.Parallel()
+
+	match, err := latestSearchMatch("tag", "重点")
+	if err != nil {
+		t.Fatalf("latestSearchMatch returned error: %v", err)
+	}
+	if len(match) != 1 || match[0].Key != "tag" {
+		t.Fatalf("latestSearchMatch = %#v, want a tag match", match)
+	}
+}
+
 func TestLatestSearchMatchNumeric(t *testing.T) {
 	match, err := latestSearchMatch("baidu_pc_weight", "2")
 	if err != nil {
