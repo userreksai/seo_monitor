@@ -17,6 +17,9 @@ type queuedStore struct {
 	retried chan string
 }
 
+func (s *queuedStore) ForgetClaim(primitive.ObjectID)                                   {}
+func (s *queuedStore) ReleaseInterruptedJob(context.Context, model.CollectionJob) error { return nil }
+
 func (s *queuedStore) ClaimNextJob(context.Context) (model.CollectionJob, error) {
 	if len(s.jobs) == 0 {
 		return model.CollectionJob{}, store.ErrNotFound

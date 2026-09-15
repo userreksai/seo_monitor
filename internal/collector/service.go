@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -20,9 +21,12 @@ type jobStore interface {
 	SaveJobResult(context.Context, model.CollectionJob, model.Metric) error
 	RetryJob(context.Context, primitive.ObjectID, error, time.Time) error
 	MarkJobFailed(context.Context, primitive.ObjectID, error) error
+	ReleaseInterruptedJob(context.Context, model.CollectionJob) error
+	ForgetClaim(primitive.ObjectID)
 }
 
 type Service struct {
+	wg           sync.WaitGroup
 	store        jobStore
 	scraper      Scraper
 	workers      int
@@ -37,9 +41,12 @@ func New(st jobStore, scraper Scraper, workers int, pollInterval time.Duration, 
 
 func (s *Service) Start(ctx context.Context) {
 	for workerID := 1; workerID <= s.workers; workerID++ {
-		go s.runWorker(ctx, workerID)
+		s.wg.Add(1)
+		go func() { defer s.wg.Done(); s.runWorker(ctx, workerID) }()
 	}
 }
+
+func (s *Service) Wait() { s.wg.Wait() }
 
 func (s *Service) runWorker(ctx context.Context, workerID int) {
 	s.logger.Info("collector worker started", "worker", workerID)
@@ -68,33 +75,58 @@ func (s *Service) runWorker(ctx context.Context, workerID int) {
 		}
 
 		s.logger.Info("collecting domain", "worker", workerID, "job_id", job.ID.Hex(), "domain", job.Domain)
-		metric, err := s.scraper.Fetch(ctx, job.Domain)
-		if err != nil {
-			s.logger.Warn("domain collection failed", "job_id", job.ID.Hex(), "domain", job.Domain, "error", err)
-			if delay, retry := retryDelay(job.AttemptCount, s.retryDelays); retry {
-				availableAt := time.Now().UTC().Add(delay)
-				if retryErr := s.store.RetryJob(ctx, job.ID, err, availableAt); retryErr != nil {
-					s.logger.Error("schedule domain retry", "job_id", job.ID.Hex(), "error", retryErr)
-				} else {
-					s.logger.Info("domain retry scheduled", "job_id", job.ID.Hex(), "domain", job.Domain,
-						"attempt", job.AttemptCount, "delay", delay, "available_at", availableAt)
-				}
-				continue
-			}
-			if markErr := s.store.MarkJobFailed(ctx, job.ID, err); markErr != nil {
-				s.logger.Error("mark job failed", "job_id", job.ID.Hex(), "error", markErr)
-			}
-			continue
-		}
-		if err := s.store.SaveJobResult(ctx, job, metric); err != nil {
-			s.logger.Error("save domain metric", "job_id", job.ID.Hex(), "domain", job.Domain, "error", err)
-			if markErr := s.store.MarkJobFailed(ctx, job.ID, err); markErr != nil {
-				s.logger.Error("mark save failure", "job_id", job.ID.Hex(), "error", markErr)
-			}
-			continue
-		}
-		s.logger.Info("domain collection succeeded", "job_id", job.ID.Hex(), "domain", job.Domain)
+		s.collectJob(ctx, job)
 	}
+}
+
+func (s *Service) collectJob(ctx context.Context, job model.CollectionJob) {
+	defer s.store.ForgetClaim(job.ID)
+	defer func() {
+		if ctx.Err() == nil {
+			return
+		}
+		// The process context is canceled during systemctl restart. Use a short
+		// independent context so the release reaches MongoDB before shutdown.
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := s.store.ReleaseInterruptedJob(releaseCtx, job); err != nil {
+			s.logger.Error("release interrupted collection job", "job_id", job.ID.Hex(), "error", err)
+		} else {
+			s.logger.Info("interrupted collection job released", "job_id", job.ID.Hex(), "domain", job.Domain)
+		}
+	}()
+	metric, err := s.scraper.Fetch(ctx, job.Domain)
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		s.logger.Warn("domain collection failed", "job_id", job.ID.Hex(), "domain", job.Domain, "error", err)
+		if delay, retry := retryDelay(job.AttemptCount, s.retryDelays); retry {
+			availableAt := time.Now().UTC().Add(delay)
+			if retryErr := s.store.RetryJob(ctx, job.ID, err, availableAt); retryErr != nil {
+				s.logger.Error("schedule domain retry", "job_id", job.ID.Hex(), "error", retryErr)
+			} else {
+				s.logger.Info("domain retry scheduled", "job_id", job.ID.Hex(), "domain", job.Domain,
+					"attempt", job.AttemptCount, "delay", delay, "available_at", availableAt)
+			}
+			return
+		}
+		if markErr := s.store.MarkJobFailed(ctx, job.ID, err); markErr != nil {
+			s.logger.Error("mark job failed", "job_id", job.ID.Hex(), "error", markErr)
+		}
+		return
+	}
+	if err := s.store.SaveJobResult(ctx, job, metric); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		s.logger.Error("save domain metric", "job_id", job.ID.Hex(), "domain", job.Domain, "error", err)
+		if markErr := s.store.MarkJobFailed(ctx, job.ID, err); markErr != nil {
+			s.logger.Error("mark save failure", "job_id", job.ID.Hex(), "error", markErr)
+		}
+		return
+	}
+	s.logger.Info("domain collection succeeded", "job_id", job.ID.Hex(), "domain", job.Domain)
 }
 
 func retryDelay(attempt int, delays []time.Duration) (time.Duration, bool) {

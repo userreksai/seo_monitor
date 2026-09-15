@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -61,6 +62,7 @@ var latestSearchFields = map[string]latestSearchField{
 }
 
 type Store struct {
+	inflight           *sync.Map
 	supplement         *Store
 	metricSource       string
 	client             *mongo.Client
@@ -93,6 +95,7 @@ func New(ctx context.Context, uri, database string) (*Store, error) {
 	}
 	db := client.Database(database)
 	return &Store{
+		inflight:           &sync.Map{},
 		client:             client,
 		db:                 db,
 		domains:            db.Collection("domains"),
@@ -622,6 +625,9 @@ func (s *Store) ClaimNextJob(ctx context.Context) (model.CollectionJob, error) {
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return model.CollectionJob{}, ErrNotFound
 	}
+	if err == nil && s.inflight != nil {
+		s.inflight.Store(job.ID, struct{}{})
+	}
 	return job, err
 }
 
@@ -712,8 +718,8 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, olderThan time.Duration) (
 			return 0, err
 		}
 	}
-	cutoff := time.Now().UTC().Add(-olderThan)
-	result, err := s.jobs.UpdateMany(ctx, bson.M{"status": "running", "started_at": bson.M{"$lt": cutoff}}, bson.M{
+	filter := s.staleJobFilter(time.Now().UTC().Add(-olderThan))
+	result, err := s.jobs.UpdateMany(ctx, filter, bson.M{
 		"$set":   bson.M{"status": "queued", "queued_at": time.Now().UTC(), "available_at": time.Now().UTC()},
 		"$unset": bson.M{"started_at": ""},
 	})

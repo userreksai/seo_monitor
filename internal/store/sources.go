@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -16,6 +17,7 @@ import (
 // durable queue, deduplication, retries and recovery.
 func (s *Store) EnableIndependentSources(ctx context.Context) (*Store, error) {
 	extra := *s
+	extra.inflight = &sync.Map{}
 	extra.supplement = nil
 	extra.metricSource = "chinaz_supplement"
 	extra.jobs = s.db.Collection("chinaz_supplement_jobs")
