@@ -503,7 +503,11 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
-	items, err := s.store.ListJobs(r.Context(), r.URL.Query().Get("status"), limit)
+	items, err := s.store.ListSourceJobs(r.Context(), r.URL.Query().Get("source"), r.URL.Query().Get("status"), limit)
+	if errors.Is(err, store.ErrInvalidSearch) {
+		writeError(w, http.StatusBadRequest, "source 必须为 aizhan、chinaz 或 chinaz_supplement")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询任务失败")
 		return

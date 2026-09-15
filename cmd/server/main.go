@@ -146,6 +146,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	var supplementStore *store.Store
+	if cfg.SourceProvider == "aizhan" {
+		supplementStore, err = st.EnableIndependentSources(rootCtx)
+		if err != nil {
+			logger.Error("initialize independent source queues", "error", err)
+			os.Exit(1)
+		}
+		if err := st.BackfillSupplementJobs(rootCtx); err != nil {
+			logger.Error("split existing collection jobs", "error", err)
+			os.Exit(1)
+		}
+	}
 	if recovered, recoverErr := st.RecoverStaleJobs(rootCtx, cfg.StaleJobAfter); recoverErr != nil {
 		logger.Error("recover stale jobs", "error", recoverErr)
 	} else if recovered > 0 {
@@ -159,11 +171,15 @@ func main() {
 		AgentURL:         cfg.AizhanAgentURL, AgentToken: cfg.AizhanAgentToken, Logger: logger,
 	}
 	var source collector.Scraper
+	var supplement collector.Scraper
 	if cfg.SourceProvider == "aizhan" {
 		supplementConfig := scrapeConfig
 		supplementConfig.BaseURL = cfg.ChinazSupplementBaseURL
 		supplementConfig.MinDelay, supplementConfig.MaxDelay = cfg.ChinazSupplementMinDelay, cfg.ChinazSupplementMaxDelay
-		source, err = scraper.NewHybrid(scrapeConfig, cfg.AizhanCooldown, supplementConfig, cfg.ChinazSupplementCooldown)
+		source, err = scraper.NewAizhan(scrapeConfig, cfg.AizhanCooldown)
+		if err == nil {
+			supplement, err = scraper.NewChinazSupplement(supplementConfig, cfg.ChinazSupplementCooldown)
+		}
 	} else {
 		source, err = scraper.NewChinaz(scrapeConfig)
 	}
@@ -175,8 +191,12 @@ func main() {
 	if cfg.SourceProvider == "aizhan" {
 		logger.Info("Aizhan collection route configured", "agent_url", cfg.AizhanAgentURL, "direct", cfg.AizhanAgentURL == "")
 	}
-	workerService := collector.New(st, source, cfg.WorkerCount, cfg.JobPollInterval, cfg.CollectionRetryDelays, logger)
+	workerService := collector.New(st, source, cfg.WorkerCount, cfg.JobPollInterval, cfg.CollectionRetryDelays, logger.With("source", cfg.SourceProvider))
 	workerService.Start(rootCtx)
+	if supplement != nil {
+		collector.New(supplementStore, supplement, 1, cfg.JobPollInterval, cfg.CollectionRetryDelays,
+			logger.With("source", "chinaz_supplement")).Start(rootCtx)
+	}
 	certificateChecker, err := certificate.NewAgentFallbackChecker(
 		certificate.NewTLSChecker(cfg.CertificateTimeout), cfg.CertificateAgentURLs,
 		cfg.CertificateAgentToken, cfg.CertificateAgentTimeout, cfg.CertificateAgentConcurrency, logger,

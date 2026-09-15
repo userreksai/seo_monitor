@@ -198,19 +198,21 @@ type TaskProgress struct {
 // snapshot date. It is derived from MongoDB so progress survives page reloads
 // and service restarts.
 type CollectionProgress struct {
-	SnapshotDate time.Time `json:"snapshot_date"`
-	InProgress   bool      `json:"in_progress"`
-	Total        int64     `json:"total"`
-	Completed    int64     `json:"completed"`
-	Pending      int64     `json:"pending"`
-	Queued       int64     `json:"queued"`
-	Running      int64     `json:"running"`
-	Succeeded    int64     `json:"succeeded"`
-	Failed       int64     `json:"failed"`
-	Canceled     int64     `json:"canceled"`
+	Supplement   *CollectionProgress `json:"supplement,omitempty"`
+	SnapshotDate time.Time           `json:"snapshot_date"`
+	InProgress   bool                `json:"in_progress"`
+	Total        int64               `json:"total"`
+	Completed    int64               `json:"completed"`
+	Pending      int64               `json:"pending"`
+	Queued       int64               `json:"queued"`
+	Running      int64               `json:"running"`
+	Succeeded    int64               `json:"succeeded"`
+	Failed       int64               `json:"failed"`
+	Canceled     int64               `json:"canceled"`
 }
 
 type CollectionJob struct {
+	Source       string             `bson:"source,omitempty" json:"source,omitempty"`
 	ID           primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	DomainID     primitive.ObjectID `bson:"domain_id" json:"domain_id"`
 	Domain       string             `bson:"domain" json:"domain,omitempty"`

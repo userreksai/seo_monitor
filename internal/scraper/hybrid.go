@@ -91,6 +91,9 @@ func (h *Hybrid) Fetch(ctx context.Context, domain string) (model.Metric, error)
 		if ctx.Err() != nil {
 			return model.Metric{}, ctx.Err()
 		}
+		if !sourceBlocked(err) {
+			return model.Metric{}, fmt.Errorf("Chinaz supplement failed: %w", err)
+		}
 		h.chinaz.rateMu.Lock()
 		h.chinaz.supplementFailures++
 		delay := h.cooldown
@@ -143,6 +146,9 @@ func (c *Chinaz) fetchSupplement(ctx context.Context, domain string) (model.Metr
 	if err != nil {
 		return model.Metric{}, err
 	}
+	if challengePage(body) {
+		return model.Metric{}, errSourceChallenge
+	}
 	metric, err := Parse(body)
 	if err != nil {
 		return model.Metric{}, err
@@ -169,6 +175,9 @@ func (c *Chinaz) fetchSupplement(ctx context.Context, domain string) (model.Metr
 			data, err := read(c.dataURL(item.endpoint, item.action, domain, key), pageURL)
 			if err != nil {
 				return model.Metric{}, err
+			}
+			if challengePage(data) {
+				return model.Metric{}, errSourceChallenge
 			}
 			var status struct {
 				StateCode *int `json:"StateCode"`

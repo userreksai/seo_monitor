@@ -61,6 +61,8 @@ var latestSearchFields = map[string]latestSearchField{
 }
 
 type Store struct {
+	supplement         *Store
+	metricSource       string
 	client             *mongo.Client
 	db                 *mongo.Database
 	domains            *mongo.Collection
@@ -524,6 +526,14 @@ func (s *Store) ArchiveDomain(ctx context.Context, id primitive.ObjectID) error 
 		"$set":   bson.M{"status": "canceled", "finished_at": now},
 		"$unset": bson.M{"dedupe_key": ""},
 	})
+	if s.supplement != nil {
+		_, err := s.supplement.jobs.UpdateMany(ctx, bson.M{"domain_id": id, "status": "queued"}, bson.M{
+			"$set": bson.M{"status": "canceled", "finished_at": now}, "$unset": bson.M{"dedupe_key": ""},
+		})
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -546,6 +556,18 @@ func (s *Store) QueueAll(ctx context.Context, snapshotDate time.Time, requestedB
 }
 
 func (s *Store) QueueDomain(ctx context.Context, id primitive.ObjectID, snapshotDate time.Time, requestedBy string, force bool) (model.CollectionJob, bool, error) {
+	job, added, err := s.queueDomain(ctx, id, snapshotDate, requestedBy, force)
+	if err != nil || s.supplement == nil {
+		return job, added, err
+	}
+	extra, extraAdded, err := s.supplement.queueDomain(ctx, id, snapshotDate, requestedBy, force)
+	if !added && extraAdded {
+		job = extra
+	}
+	return job, added || extraAdded, err
+}
+
+func (s *Store) queueDomain(ctx context.Context, id primitive.ObjectID, snapshotDate time.Time, requestedBy string, force bool) (model.CollectionJob, bool, error) {
 	domain, err := s.GetDomain(ctx, id)
 	if err != nil {
 		return model.CollectionJob{}, false, err
@@ -568,6 +590,7 @@ func (s *Store) QueueDomain(ctx context.Context, id primitive.ObjectID, snapshot
 	now := time.Now().UTC()
 	key := id.Hex() + ":" + snapshotDate.Format("2006-01-02")
 	job := model.CollectionJob{
+		Source:       s.metricSource,
 		ID:           primitive.NewObjectID(),
 		DomainID:     id,
 		Domain:       domain.Domain,
@@ -621,9 +644,22 @@ func (s *Store) SaveJobResult(ctx context.Context, job model.CollectionJob, metr
 	if metric.CollectedAt.IsZero() {
 		metric.CollectedAt = time.Now().UTC()
 	}
-	_, err := s.metrics.ReplaceOne(ctx,
-		bson.M{"domain": job.Domain, "snapshot_date": job.SnapshotDate}, metric,
-		options.Replace().SetUpsert(true))
+	filter := bson.M{"domain": job.Domain, "snapshot_date": job.SnapshotDate}
+	var err error
+	if s.metricSource == "" {
+		_, err = s.metrics.ReplaceOne(ctx, filter, metric, options.Replace().SetUpsert(true))
+	} else {
+		update, buildErr := sourceMetricUpdate(metric, s.metricSource)
+		if buildErr != nil {
+			return buildErr
+		}
+		_, err = s.metrics.UpdateOne(ctx, filter, update, options.Update().SetUpsert(true))
+		// Both sources can insert the same day's document concurrently. Retry
+		// the loser as an update, keeping the unique domain/date index intact.
+		if mongo.IsDuplicateKeyError(err) {
+			_, err = s.metrics.UpdateOne(ctx, filter, update, options.Update().SetUpsert(true))
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -668,6 +704,14 @@ func collectionErrorMessage(cause error) string {
 }
 
 func (s *Store) RecoverStaleJobs(ctx context.Context, olderThan time.Duration) (int64, error) {
+	var supplemental int64
+	if s.supplement != nil {
+		var err error
+		supplemental, err = s.supplement.RecoverStaleJobs(ctx, olderThan)
+		if err != nil {
+			return 0, err
+		}
+	}
 	cutoff := time.Now().UTC().Add(-olderThan)
 	result, err := s.jobs.UpdateMany(ctx, bson.M{"status": "running", "started_at": bson.M{"$lt": cutoff}}, bson.M{
 		"$set":   bson.M{"status": "queued", "queued_at": time.Now().UTC(), "available_at": time.Now().UTC()},
@@ -676,7 +720,7 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, olderThan time.Duration) (
 	if err != nil {
 		return 0, err
 	}
-	return result.ModifiedCount, nil
+	return result.ModifiedCount + supplemental, nil
 }
 
 // CleanupBefore removes historical metrics and collection/polling records whose
@@ -693,6 +737,13 @@ func (s *Store) CleanupBefore(ctx context.Context, cutoff time.Time) (CleanupRes
 		return cleaned, fmt.Errorf("delete expired collection jobs: %w", err)
 	}
 	cleaned.JobsDeleted = jobsResult.DeletedCount
+	if s.supplement != nil {
+		r, err := s.supplement.jobs.DeleteMany(ctx, filter)
+		if err != nil {
+			return cleaned, err
+		}
+		cleaned.JobsDeleted += r.DeletedCount
+	}
 
 	metricsResult, err := s.metrics.DeleteMany(ctx, filter)
 	if err != nil {
@@ -1251,6 +1302,13 @@ func (s *Store) ListJobs(ctx context.Context, status string, limit int64) ([]mod
 // pending count and avoids double-counting retries.
 func (s *Store) CollectionProgress(ctx context.Context, snapshotDate time.Time) (model.CollectionProgress, error) {
 	progress := model.CollectionProgress{SnapshotDate: snapshotDate}
+	if s.supplement != nil {
+		extra, err := s.supplement.CollectionProgress(ctx, snapshotDate)
+		if err != nil {
+			return progress, err
+		}
+		progress.Supplement = &extra
+	}
 	statusCount := func(status string) bson.M {
 		return bson.M{"$sum": bson.M{"$cond": bson.A{
 			bson.M{"$eq": bson.A{"$collection_status", status}}, 1, 0,
@@ -1259,7 +1317,7 @@ func (s *Store) CollectionProgress(ctx context.Context, snapshotDate time.Time) 
 	pipeline := mongo.Pipeline{
 		bson.D{{Key: "$match", Value: bson.M{"active": true}}},
 		bson.D{{Key: "$lookup", Value: bson.M{
-			"from": "collection_jobs",
+			"from": s.jobs.Name(),
 			"let":  bson.M{"domainID": "$_id"},
 			"pipeline": mongo.Pipeline{
 				bson.D{{Key: "$match", Value: bson.M{"$expr": bson.M{"$and": bson.A{

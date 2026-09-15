@@ -66,7 +66,8 @@ ensureCollection("domain_daily_metrics", {
   },
 });
 
-ensureCollection("collection_jobs", {
+for (const jobCollection of ["collection_jobs", "chinaz_supplement_jobs"]) {
+ensureCollection(jobCollection, {
   bsonType: "object",
   title: "Durable collection queue",
   required: ["domain_id", "domain", "snapshot_date", "status", "requested_by", "attempt_count", "queued_at"],
@@ -84,8 +85,10 @@ ensureCollection("collection_jobs", {
     finished_at: { bsonType: "date" },
     error_message: { bsonType: "string" },
     dedupe_key: { bsonType: "string" },
+    source: { bsonType: "string" },
   },
 });
+}
 
 ensureCollection("domain_certificates", {
   bsonType: "object",

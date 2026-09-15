@@ -50,11 +50,12 @@ type seoAgentResponse struct {
 	Result struct {
 		Available bool `json:"available"`
 		SEO       *struct {
-			URL        string     `json:"url"`
-			StatusCode int        `json:"statusCode"`
-			Body       []byte     `json:"body"`
-			Error      string     `json:"error"`
-			RetryAt    *time.Time `json:"retryAt"`
+			URL           string     `json:"url"`
+			StatusCode    int        `json:"statusCode"`
+			Body          []byte     `json:"body"`
+			Error         string     `json:"error"`
+			RetryAt       *time.Time `json:"retryAt"`
+			SourceBlocked bool       `json:"sourceBlocked"`
 		} `json:"seo"`
 	} `json:"result"`
 }
@@ -90,7 +91,8 @@ func (a *aizhanAgent) fetch(ctx context.Context, target string) ([]byte, bool, t
 	defer resp.Body.Close()
 	after := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 	if resp.StatusCode != http.StatusOK {
-		return nil, false, after, fmt.Errorf("SEO Agent returned HTTP %d; verify Agent supports type=seo and shared token matches", resp.StatusCode)
+		// The Agent's own 429 is capacity pressure, not Aizhan blocking.
+		return nil, false, time.Time{}, fmt.Errorf("SEO Agent returned HTTP %d; verify Agent capacity, type=seo support and shared token", resp.StatusCode)
 	}
 	// Body is base64 in JSON. Permit bounded encoding overhead, never unbounded HTML.
 	limit := ((a.maxBody+2)/3)*4 + 65536
@@ -123,7 +125,11 @@ func (a *aizhanAgent) fetch(ctx context.Context, target string) ([]byte, bool, t
 		if len(message) > 512 {
 			message = message[:512]
 		}
-		return nil, false, after, fmt.Errorf("SEO Agent upstream failed (HTTP %d): %s", r.StatusCode, message)
+		cause := fmt.Errorf("SEO Agent upstream failed (HTTP %d): %s", r.StatusCode, message)
+		if r.SourceBlocked || r.StatusCode == 403 || r.StatusCode == 429 {
+			return nil, false, after, fmt.Errorf("%v: %w", cause, &sourceHTTPError{status: 429, retryAfter: after})
+		}
+		return nil, false, time.Time{}, cause
 	}
 	if len(r.Body) == 0 {
 		return nil, false, after, errors.New("SEO Agent returned HTTP 200 with an empty body")

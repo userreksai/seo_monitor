@@ -169,6 +169,9 @@ func (a *Aizhan) Fetch(ctx context.Context, domain string) (model.Metric, error)
 		if err == nil {
 			var metric model.Metric
 			metric, err = ParseAizhan(body, normalized)
+			if err != nil && challengePage(body) {
+				err = errSourceChallenge
+			}
 			if err == nil {
 				hash := sha256.Sum256(body)
 				metric.Domain = normalized
@@ -183,6 +186,12 @@ func (a *Aizhan) Fetch(ctx context.Context, domain string) (model.Metric, error)
 			}
 		}
 		if !retry || attempt+1 == a.cfg.Retries {
+			if retryAfter.After(time.Now()) && a.agent == nil {
+				err = fmt.Errorf("%v: %w", err, &sourceHTTPError{retryAfter: retryAfter})
+			}
+			if !sourceBlocked(err) {
+				return model.Metric{}, fmt.Errorf("Aizhan collection failed: %w", err)
+			}
 			a.fail(retryAfter)
 			a.mu.Lock()
 			resume := a.cooldown
@@ -213,7 +222,7 @@ func (a *Aizhan) fetchOnce(ctx context.Context, target string) ([]byte, bool, ti
 	if resp.StatusCode != http.StatusOK {
 		// 403/429 and explicit Retry-After immediately cool down the whole source.
 		retry := resp.StatusCode >= 500 && after.IsZero()
-		return nil, retry, after, fmt.Errorf("source returned HTTP %d", resp.StatusCode)
+		return nil, retry, after, &sourceHTTPError{status: resp.StatusCode, retryAfter: after}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, a.cfg.MaxResponseBytes+1))
 	if err != nil {

@@ -204,8 +204,8 @@ func TestAizhanExponentialCooldown(t *testing.T) {
 func TestAizhanBoundedRetryAndResponse(t *testing.T) {
 	var count atomic.Int32
 	a := newTestAizhan(t, func(w http.ResponseWriter, r *http.Request) { count.Add(1); w.WriteHeader(503) })
-	if _, err := a.Fetch(context.Background(), "www.baidu.com"); err == nil || count.Load() != 2 || a.cooldown.IsZero() {
-		t.Fatal("unbounded retry or missing cooldown")
+	if _, err := a.Fetch(context.Background(), "www.baidu.com"); err == nil || count.Load() != 2 || !a.cooldown.IsZero() {
+		t.Fatal("unbounded retry or ordinary 503 cooled the whole source")
 	}
 	b := newTestAizhan(t, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(strings.Repeat("x", 64))) })
 	b.cfg.MaxResponseBytes = 16
