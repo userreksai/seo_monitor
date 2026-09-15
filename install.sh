@@ -190,6 +190,8 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     printf 'SOURCE_PROVIDER=aizhan\n'
     printf 'SOURCE_BASE_URL=https://www.aizhan.com\n'
     printf 'AIZHAN_COOLDOWN=15m\n'
+    printf 'AIZHAN_AGENT_URL=\n'
+    printf 'AIZHAN_AGENT_TOKEN=\n'
     printf 'SOURCE_DATA_URL=https://othertool.chinaz.com\n'
     printf 'CHINAZ_SUPPLEMENT_BASE_URL=https://seo.chinaz.com\n'
     printf 'CHINAZ_SUPPLEMENT_MIN_DELAY=3s\n'

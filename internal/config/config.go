@@ -29,6 +29,8 @@ type Config struct {
 	EnsureIndexes               bool
 	SourceProvider              string
 	AizhanCooldown              time.Duration
+	AizhanAgentURL              string
+	AizhanAgentToken            string
 	ChinazSupplementBaseURL     string
 	ChinazSupplementMinDelay    time.Duration
 	ChinazSupplementMaxDelay    time.Duration
@@ -102,6 +104,8 @@ func Load() (Config, error) {
 		EnsureIndexes:               envBool("ENSURE_INDEXES", true),
 		SourceProvider:              provider,
 		AizhanCooldown:              envDuration("AIZHAN_COOLDOWN", 15*time.Minute),
+		AizhanAgentURL:              strings.TrimSpace(os.Getenv("AIZHAN_AGENT_URL")),
+		AizhanAgentToken:            strings.TrimSpace(os.Getenv("AIZHAN_AGENT_TOKEN")),
 		ChinazSupplementBaseURL:     env("CHINAZ_SUPPLEMENT_BASE_URL", "https://seo.chinaz.com"),
 		ChinazSupplementMinDelay:    envDuration("CHINAZ_SUPPLEMENT_MIN_DELAY", 3*time.Second),
 		ChinazSupplementMaxDelay:    envDuration("CHINAZ_SUPPLEMENT_MAX_DELAY", 8*time.Second),
@@ -143,6 +147,12 @@ func Load() (Config, error) {
 	}
 	if cfg.TitleAgentToken == "" {
 		cfg.TitleAgentToken = cfg.CertificateAgentToken
+	}
+	if cfg.AizhanAgentToken == "" {
+		cfg.AizhanAgentToken = cfg.TitleAgentToken
+	}
+	if provider == "aizhan" && cfg.AizhanAgentURL != "" && (cfg.AizhanAgentToken == "" || cfg.ScrapeTimeout < 500*time.Millisecond) {
+		return Config{}, fmt.Errorf("爱站 Agent 模式要求共享 Token，且 SCRAPE_TIMEOUT >= 500ms")
 	}
 
 	if provider != "aizhan" && provider != "chinaz" {
