@@ -39,6 +39,11 @@ func (s *Service) runWorker(ctx context.Context, workerID int) {
 		if ctx.Err() != nil {
 			return
 		}
+		if gate, ok := s.scraper.(interface{ WaitReady(context.Context) error }); ok {
+			if err := gate.WaitReady(ctx); err != nil {
+				return
+			}
+		}
 		job, err := s.store.ClaimNextJob(ctx)
 		if errors.Is(err, store.ErrNotFound) {
 			if !wait(ctx, s.pollInterval) {

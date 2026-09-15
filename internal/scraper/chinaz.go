@@ -47,16 +47,18 @@ type Config struct {
 }
 
 type Chinaz struct {
-	baseURL          string
-	dataBaseURL      string
-	userAgent        string
-	client           *http.Client
-	minDelay         time.Duration
-	maxDelay         time.Duration
-	retries          int
-	maxResponseBytes int64
-	rateMu           sync.Mutex
-	nextRequest      time.Time
+	baseURL            string
+	dataBaseURL        string
+	userAgent          string
+	client             *http.Client
+	minDelay           time.Duration
+	maxDelay           time.Duration
+	retries            int
+	maxResponseBytes   int64
+	rateMu             sync.Mutex
+	nextRequest        time.Time
+	cooldownUntil      time.Time
+	supplementFailures int
 }
 
 func NewChinaz(cfg Config) (*Chinaz, error) {
@@ -196,7 +198,7 @@ func (c *Chinaz) fetchOnceWithReferer(ctx context.Context, target, referer strin
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		retry := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
-		return nil, retry, fmt.Errorf("source returned HTTP %d", resp.StatusCode)
+		return nil, retry, &sourceHTTPError{status: resp.StatusCode, retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
 	}
 	limited := io.LimitReader(resp.Body, c.maxResponseBytes+1)
 	body, err := io.ReadAll(limited)
@@ -210,6 +212,10 @@ func (c *Chinaz) fetchOnceWithReferer(ctx context.Context, target, referer strin
 }
 
 func (c *Chinaz) fetchData(ctx context.Context, endpoint, action, domain, secretKey, referer string) ([]byte, error) {
+	return c.fetchWithRetry(ctx, c.dataURL(endpoint, action, domain, secretKey), referer)
+}
+
+func (c *Chinaz) dataURL(endpoint, action, domain, secretKey string) string {
 	key, random := generateHostKey(domain)
 	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	tokenBytes := md5.Sum([]byte(key + "Ch*z#N|a&i!O$" + timestamp))
@@ -224,7 +230,7 @@ func (c *Chinaz) fetchData(ctx context.Context, endpoint, action, domain, secret
 	if action != "" {
 		query.Set("action", action)
 	}
-	return c.fetchWithRetry(ctx, c.dataBaseURL+endpoint+"?"+query.Encode(), referer)
+	return c.dataBaseURL + endpoint + "?" + query.Encode()
 }
 
 func generateHostKey(domain string) (string, int) {
