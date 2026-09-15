@@ -72,6 +72,7 @@ func TestAizhanAgentValidationAndCooldown(t *testing.T) {
 				case "oversized":
 					seo["body"] = make([]byte, 5000)
 				case "cooldown":
+					seo["sourceBlocked"] = true
 					result["available"] = false
 					seo["error"] = "cooling down"
 					seo["retryAt"] = time.Now().UTC().Add(2 * time.Hour)
@@ -90,8 +91,8 @@ func TestAizhanAgentValidationAndCooldown(t *testing.T) {
 			if _, err = a.Fetch(context.Background(), "www.baidu.com"); err == nil {
 				t.Fatal("invalid response accepted")
 			}
-			if a.cooldown.IsZero() {
-				t.Fatal("missing cooldown")
+			if kind != "cooldown" && !a.cooldown.IsZero() {
+				t.Fatal("ordinary response error cooled the whole source")
 			}
 			if kind == "cooldown" && time.Until(a.cooldown) < 119*time.Minute {
 				t.Fatal("Agent retryAt lost")

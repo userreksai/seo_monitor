@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"seo-monitor/internal/model"
 	"seo-monitor/internal/store"
 )
@@ -14,8 +15,15 @@ type Scraper interface {
 	Fetch(context.Context, string) (model.Metric, error)
 }
 
+type jobStore interface {
+	ClaimNextJob(context.Context) (model.CollectionJob, error)
+	SaveJobResult(context.Context, model.CollectionJob, model.Metric) error
+	RetryJob(context.Context, primitive.ObjectID, error, time.Time) error
+	MarkJobFailed(context.Context, primitive.ObjectID, error) error
+}
+
 type Service struct {
-	store        *store.Store
+	store        jobStore
 	scraper      Scraper
 	workers      int
 	pollInterval time.Duration
@@ -23,7 +31,7 @@ type Service struct {
 	logger       *slog.Logger
 }
 
-func New(st *store.Store, scraper Scraper, workers int, pollInterval time.Duration, retryDelays []time.Duration, logger *slog.Logger) *Service {
+func New(st jobStore, scraper Scraper, workers int, pollInterval time.Duration, retryDelays []time.Duration, logger *slog.Logger) *Service {
 	return &Service{store: st, scraper: scraper, workers: workers, pollInterval: pollInterval, retryDelays: retryDelays, logger: logger}
 }
 

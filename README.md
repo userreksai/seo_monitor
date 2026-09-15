@@ -206,7 +206,7 @@ CERTIFICATE_DOMAINS_FILE=certificate_domains.json
 
 爱站模式只允许一个采集 Worker，每次请求完成后随机间隔 10–20 秒，同一出口只运行一个采集后端实例。进程内限流不支持多个副本共享；域名扩量前应检查成功率和任务积压。
 
-爱站遇到验证码、HTTP 403/429、重定向或关键权重缺失，会暂停整个来源，默认冷却 15 分钟，连续失败逐次翻倍至 1 小时，并遵守更长的 `Retry-After`。冷却期间不领取新任务。网络错误和无 `Retry-After` 的 5xx 最多进行两次节流请求。失败任务持久化排队，默认在 10 分钟、30 分钟、1 小时后各重试一次，实际执行还需等待来源冷却；第 4 次任务尝试仍失败才标记为最终失败：
+爱站权重与站长工具补充字段使用独立队列、worker 和字段更新，任一来源成功就写库，互不等待、互不覆盖。普通超时、空响应、解析错误和普通 5xx 只重试当前任务；只有源站 HTTP 403/429、明确安全验证或失败响应带有效 `Retry-After` 才暂停对应来源，默认冷却 15 分钟，连续封禁逐次翻倍至 1 小时，并遵守更长的 `Retry-After`。Agent 自身容量不足不会触发爱站长冷却。网络错误和无 `Retry-After` 的 5xx 最多进行两次节流请求。失败任务持久化排队，默认在 10 分钟、30 分钟、1 小时后各重试一次；第 4 次任务尝试仍失败才标记为最终失败：
 
 ```dotenv
 COLLECTION_RETRY_DELAYS=10m,30m,1h
@@ -372,7 +372,7 @@ Content-Type: application/json
 | `DELETE` | `/api/v1/domains/{id}` | 软删除/归档 |
 | `POST` | `/api/v1/domains/{id}/collect` | 手动排队采集单个域名 |
 | `POST` | `/api/v1/collect` | 排队采集全部启用域名 |
-| `GET` | `/api/v1/collect/progress` | 当天采集进度、成功数和失败数 |
+| `GET` | `/api/v1/collect/progress` | 当天权重采集进度；`supplement` 为独立的站长工具补充进度 |
 | `GET` | `/api/v1/domains/{id}/latest` | 最新快照 |
 | `GET` | `/api/v1/domains/{id}/metrics?from=2026-01-01&to=2026-07-10` | 趋势数据 |
 | `GET` | `/api/v1/search?field=domain&q=example&status=failed&sort_by=traffic&sort_order=asc&page=1&limit=50` | 按指定字段搜索域名及最新指标；`status=failed` 筛选最近采集失败；`sort_by` 支持 `traffic`、`weight`、`rank`，`sort_order` 支持 `asc`、`desc` |
