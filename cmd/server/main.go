@@ -158,11 +158,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	if recovered, recoverErr := st.RecoverStaleJobs(rootCtx, cfg.StaleJobAfter); recoverErr != nil {
-		logger.Error("recover stale jobs", "error", recoverErr)
-	} else if recovered > 0 {
-		logger.Info("recovered stale jobs", "count", recovered)
-	}
+	go collector.RunRecovery(rootCtx, st, cfg.StaleJobAfter, time.Minute, logger)
 
 	scrapeConfig := scraper.Config{
 		BaseURL: cfg.SourceBaseURL, DataBaseURL: cfg.SourceDataURL, UserAgent: cfg.UserAgent, Timeout: cfg.ScrapeTimeout,
@@ -193,9 +189,11 @@ func main() {
 	}
 	workerService := collector.New(st, source, cfg.WorkerCount, cfg.JobPollInterval, cfg.CollectionRetryDelays, logger.With("source", cfg.SourceProvider))
 	workerService.Start(rootCtx)
+	var supplementService *collector.Service
 	if supplement != nil {
-		collector.New(supplementStore, supplement, 1, cfg.JobPollInterval, cfg.CollectionRetryDelays,
-			logger.With("source", "chinaz_supplement")).Start(rootCtx)
+		supplementService = collector.New(supplementStore, supplement, 1, cfg.JobPollInterval, cfg.CollectionRetryDelays,
+			logger.With("source", "chinaz_supplement"))
+		supplementService.Start(rootCtx)
 	}
 	certificateChecker, err := certificate.NewAgentFallbackChecker(
 		certificate.NewTLSChecker(cfg.CertificateTimeout), cfg.CertificateAgentURLs,
@@ -301,6 +299,10 @@ func main() {
 	defer shutdownCancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("HTTP shutdown failed", "error", err)
+	}
+	workerService.Wait()
+	if supplementService != nil {
+		supplementService.Wait()
 	}
 	logger.Info("shutdown complete")
 }

@@ -51,6 +51,8 @@
 
 爱站沿用 `collection_jobs`，站长工具使用新集合 `chinaz_supplement_jobs`，服务启动自动建立索引，兼容 `SKIP_MONGO_INIT=1`。升级时自动为原有 queued/running 任务补建独立补充任务。手动、定时、启动采集同时入队两来源；去重与成功检查各自独立，force 也不会重复创建正在排队或执行的同源任务。进程重启后的任务恢复、归档取消和历史清理覆盖两队列。
 
+重启不会取消整轮采集或清除排队任务。正常关闭时，worker 使用独立的 5 秒写库窗口将中断任务立即退回 queued，并退还该次尝试计数；主进程等待 worker 释放任务后退出。异常退出或暂时写库失败遗留的 running 任务在超过 `STALE_JOB_AFTER`（默认 20 分钟）后，由每分钟巡检自动恢复；启动时尚未超时的任务也会在后续巡检恢复，不再永久悬挂。巡检排除本进程仍在执行的任务，以免较慢但活跃的请求被重复领取。两队列均适用。
+
 `GET /api/v1/collect/progress` 顶层仍是权重任务进度，不把两个来源算成双倍域名；新增 `supplement` 返回站长工具的同结构进度。各自的 `in_progress` 独立。采集日志的 `source` 为 `aizhan` 或 `chinaz_supplement`。`GET /api/v1/jobs?source=chinaz_supplement` 可查看补充任务及错误，默认仍查看权重任务。
 
 两来源通过 MongoDB 原子字段更新合并到同一个 domain/date 文档，不再整条替换。补充先到时，快照可只包含补充字段；权重字段仍为空。为兼容已有严格 validator，补充首次插入时使用真实 Chinaz 来源填充通用 provenance；爱站完成后更新通用来源，Chinaz 来源始终单独记录在 `supplemental_*`。
