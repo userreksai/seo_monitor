@@ -66,6 +66,37 @@
 
 ## 旧部署切换
 
+### 可选：爱站页面通过指定 Agent 获取
+
+主控直连仍是默认行为。2026-09-15 实际诊断中，同一域名在主控返回 HTTP 200、0 字节，在 `49.7.214.217:8002` 所在节点返回正常 HTML。这只能确认当时两条网络路径的结果不同，不能断言主控永久不可访问爱站。
+
+可选 Agent 模式仅改变爱站页面的获取路径：Agent → 返回原始页面字节 → 主控校验域名、解析权重 → 主控直连站长工具补充五个字段 → MongoDB。两家数据都不通过 Agent 的标题解析器。爱站失败不会自动轮换节点或退回主控反复请求。
+
+先升级 SituationAwareness-agent 至支持 `type=seo` 的版本，保持已有 8002 端口与共享 Token，`AGENT_MAX_TIMEOUT` 不小于主控 `SCRAPE_TIMEOUT`（默认 25s）。检查：
+
+```bash
+curl -fsS http://49.7.214.217:8002/healthz
+```
+
+响应 `taskTypes` 必须包含 `seo`。旧版本不支持该任务；仅配置现有证书/标题 URL 不会自动启用爱站转发。
+
+升级主控后，在 `/usr/local/seo_monitor/.env` 中设置或替换（避免重复键）：
+
+```dotenv
+AIZHAN_AGENT_URL=http://49.7.214.217:8002
+AIZHAN_AGENT_TOKEN=
+```
+
+空的 `AIZHAN_AGENT_TOKEN` 复用 `TITLE_AGENT_TOKEN`，再回退 `CERTIFICATE_AGENT_TOKEN`；必须与目标 Agent 的 `AGENT_SHARED_TOKEN` 相同。无需把 Token 发到聊天或提交进 Git。重新启动 `seo-monitor` 使配置生效；不需要重复提交仍在排队的 498 个任务。切回主控直连时把 `AIZHAN_AGENT_URL` 清空并重启。
+
+日志 `Aizhan request started` 的 `route` 会显示 `direct` 或 `agent:http://.../api/v1/tasks`；`Aizhan response received` 显示收到的页面字节数和传输错误；`domain collection succeeded` 才代表解析、补充及入库完成。空响应会明确报告 `HTTP 200 with an empty body`。快照新增 `collection_route` 便于区分直连与 Agent 获取的结果。
+
+Agent 只允许固定的 `https://www.aizhan.com/cha/{domain}/` 地址，禁止 URL/端口参数，不跟随重定向，最多读取 3 MiB。原始正文以 JSON base64 返回，主控再次限制响应大小、校验任务 ID/域名/来源 URL，并沿用原页面解析校验。Agent 独立限制单个 SEO 请求、完成后至少间隔 10 秒，错误冷却 15–60 分钟；主控仍按 10–20 秒节流。多个主控不能借同一 Agent 提升吞吐。
+
+本地完整链路验证（2026-09-15）：启动临时新版 Agent，通过主控 probe 查询 `itgirls.cn` 收到 94,016 字节并解析出百度 PC/移动 0、搜狗 3、360 1、反链 5。未连接生产数据库；部署到 boce 后还需检查实际采集日志。
+
+### 原数据源参数
+
 更新后端程序后，在实际服务读取的环境文件中修改下列项目并重启服务。安装脚本对已有环境文件的保留行为不变，不会替你改线上配置。
 
 ```dotenv

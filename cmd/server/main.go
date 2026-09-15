@@ -156,6 +156,7 @@ func main() {
 		BaseURL: cfg.SourceBaseURL, DataBaseURL: cfg.SourceDataURL, UserAgent: cfg.UserAgent, Timeout: cfg.ScrapeTimeout,
 		MinDelay: cfg.ScrapeMinDelay, MaxDelay: cfg.ScrapeMaxDelay, Retries: cfg.ScrapeRetries,
 		MaxResponseBytes: cfg.MaxResponseBytes,
+		AgentURL:         cfg.AizhanAgentURL, AgentToken: cfg.AizhanAgentToken, Logger: logger,
 	}
 	var source collector.Scraper
 	if cfg.SourceProvider == "aizhan" {
@@ -171,6 +172,9 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("SEO collection source configured", "provider", cfg.SourceProvider, "min_delay", cfg.ScrapeMinDelay, "max_delay", cfg.ScrapeMaxDelay)
+	if cfg.SourceProvider == "aizhan" {
+		logger.Info("Aizhan collection route configured", "agent_url", cfg.AizhanAgentURL, "direct", cfg.AizhanAgentURL == "")
+	}
 	workerService := collector.New(st, source, cfg.WorkerCount, cfg.JobPollInterval, cfg.CollectionRetryDelays, logger)
 	workerService.Start(rootCtx)
 	certificateChecker, err := certificate.NewAgentFallbackChecker(

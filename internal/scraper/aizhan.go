@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
@@ -33,6 +34,8 @@ type Aizhan struct {
 	cooldown     time.Time
 	failures     int
 	baseCooldown time.Duration
+	agent        *aizhanAgent
+	logger       *slog.Logger
 }
 
 func NewAizhan(cfg Config, cooldown time.Duration) (*Aizhan, error) {
@@ -57,9 +60,23 @@ func NewAizhan(cfg Config, cooldown time.Duration) (*Aizhan, error) {
 		cfg.MaxResponseBytes = 3 * 1024 * 1024
 	}
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
+	var agent *aizhanAgent
+	if cfg.AgentURL != "" {
+		if cfg.BaseURL != "https://www.aizhan.com" {
+			return nil, errors.New("Agent mode requires SOURCE_BASE_URL=https://www.aizhan.com")
+		}
+		agent, err = newAizhanAgent(cfg)
+		if err != nil {
+			return nil, err
+		}
+	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Aizhan{cfg: cfg, client: &http.Client{Timeout: cfg.Timeout,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }},
-		slot: make(chan struct{}, 1), baseCooldown: cooldown}, nil
+		slot: make(chan struct{}, 1), baseCooldown: cooldown, agent: agent, logger: logger}, nil
 }
 
 // WaitReady runs before a job is claimed, so a long source outage does not
@@ -138,7 +155,13 @@ func (a *Aizhan) Fetch(ctx context.Context, domain string) (model.Metric, error)
 		if err := a.WaitReady(ctx); err != nil {
 			return model.Metric{}, err
 		}
+		route := "direct"
+		if a.agent != nil {
+			route = "agent:" + a.agent.endpoint
+		}
+		a.logger.Info("Aizhan request started", "domain", normalized, "route", route, "attempt", attempt+1)
 		body, retry, retryAfter, err := a.fetchOnce(ctx, target)
+		a.logger.Info("Aizhan response received", "domain", normalized, "route", route, "bytes", len(body), "error", err)
 		a.delay() // Delay after completion also limits slow concurrent requests.
 		if ctx.Err() != nil {
 			return model.Metric{}, ctx.Err()
@@ -149,6 +172,7 @@ func (a *Aizhan) Fetch(ctx context.Context, domain string) (model.Metric, error)
 			if err == nil {
 				hash := sha256.Sum256(body)
 				metric.Domain = normalized
+				metric.CollectionRoute = route
 				metric.SourceURL, metric.RawSHA256 = target, hex.EncodeToString(hash[:])
 				metric.CollectedAt = time.Now().UTC()
 				a.mu.Lock()
@@ -170,6 +194,9 @@ func (a *Aizhan) Fetch(ctx context.Context, domain string) (model.Metric, error)
 }
 
 func (a *Aizhan) fetchOnce(ctx context.Context, target string) ([]byte, bool, time.Time, error) {
+	if a.agent != nil {
+		return a.agent.fetch(ctx, target)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, false, time.Time{}, err
@@ -194,6 +221,9 @@ func (a *Aizhan) fetchOnce(ctx context.Context, target string) ([]byte, bool, ti
 	}
 	if int64(len(body)) > a.cfg.MaxResponseBytes {
 		return nil, false, after, errors.New("Aizhan response too large")
+	}
+	if len(body) == 0 {
+		return nil, false, after, errors.New("Aizhan returned HTTP 200 with an empty body")
 	}
 	return body, false, after, nil
 }

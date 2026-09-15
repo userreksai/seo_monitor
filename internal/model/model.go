@@ -82,6 +82,7 @@ type Metric struct {
 	SourceURL               string             `bson:"source_url" json:"source_url"`
 	RawSHA256               string             `bson:"raw_sha256" json:"raw_sha256"`
 	SupplementalSourceURL   string             `bson:"supplemental_source_url,omitempty" json:"supplemental_source_url,omitempty"`
+	CollectionRoute         string             `bson:"collection_route,omitempty" json:"collection_route,omitempty"`
 	SupplementalRawSHA256   string             `bson:"supplemental_raw_sha256,omitempty" json:"supplemental_raw_sha256,omitempty"`
 	SupplementalCollectedAt *time.Time         `bson:"supplemental_collected_at,omitempty" json:"supplemental_collected_at,omitempty"`
 }

@@ -35,6 +35,30 @@ func TestSourceSelection(t *testing.T) {
 	}
 }
 
+func TestAizhanAgentTokenFallback(t *testing.T) {
+	t.Setenv("AIZHAN_AGENT_URL", "http://49.7.214.217:8002")
+	t.Setenv("AIZHAN_AGENT_TOKEN", "")
+	t.Setenv("TITLE_AGENT_TOKEN", "")
+	t.Setenv("CERTIFICATE_AGENT_TOKEN", "certificate-token")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AizhanAgentToken != "certificate-token" {
+		t.Fatal("missing certificate token fallback")
+	}
+	t.Setenv("TITLE_AGENT_TOKEN", "title-token")
+	cfg, err = Load()
+	if err != nil || cfg.AizhanAgentToken != "title-token" {
+		t.Fatal("missing title token fallback", err)
+	}
+	t.Setenv("AIZHAN_AGENT_TOKEN", "seo-token")
+	cfg, err = Load()
+	if err != nil || cfg.AizhanAgentToken != "seo-token" {
+		t.Fatal("explicit token ignored", err)
+	}
+}
+
 func TestUnsafeAizhanConfigurationRejected(t *testing.T) {
 	for key, value := range map[string]string{
 		"SOURCE_PROVIDER": "unknown", "SOURCE_BASE_URL": "https://seo.chinaz.com",

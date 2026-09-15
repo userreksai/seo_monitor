@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
@@ -44,6 +45,9 @@ type Config struct {
 	MaxDelay         time.Duration
 	Retries          int
 	MaxResponseBytes int64
+	AgentURL         string
+	AgentToken       string
+	Logger           *slog.Logger
 }
 
 type Chinaz struct {

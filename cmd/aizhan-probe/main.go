@@ -16,10 +16,12 @@ import (
 func main() {
 	domain := flag.String("domain", "www.baidu.com", "one hostname to query (one request, no database writes)")
 	withChinaz := flag.Bool("with-chinaz", false, "also fetch the five supplemental Chinaz fields (up to three extra requests)")
+	agentURL := flag.String("agent-url", os.Getenv("AIZHAN_AGENT_URL"), "optional Agent base URL; token comes from AIZHAN_AGENT_TOKEN environment")
 	flag.Parse()
 	cfg := scraper.Config{
 		BaseURL: "https://www.aizhan.com", UserAgent: "seo-monitor/1.0 (daily metrics collector; contact your administrator)",
 		Timeout: 25 * time.Second, MinDelay: 10 * time.Second, MaxDelay: 20 * time.Second, Retries: 1,
+		AgentURL: *agentURL, AgentToken: os.Getenv("AIZHAN_AGENT_TOKEN"),
 	}
 	var source interface {
 		Fetch(context.Context, string) (model.Metric, error)
