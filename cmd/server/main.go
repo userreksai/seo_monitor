@@ -152,15 +152,25 @@ func main() {
 		logger.Info("recovered stale jobs", "count", recovered)
 	}
 
-	source, err := scraper.NewChinaz(scraper.Config{
+	scrapeConfig := scraper.Config{
 		BaseURL: cfg.SourceBaseURL, DataBaseURL: cfg.SourceDataURL, UserAgent: cfg.UserAgent, Timeout: cfg.ScrapeTimeout,
 		MinDelay: cfg.ScrapeMinDelay, MaxDelay: cfg.ScrapeMaxDelay, Retries: cfg.ScrapeRetries,
 		MaxResponseBytes: cfg.MaxResponseBytes,
-	})
+	}
+	var source collector.Scraper
+	if cfg.SourceProvider == "aizhan" {
+		supplementConfig := scrapeConfig
+		supplementConfig.BaseURL = cfg.ChinazSupplementBaseURL
+		supplementConfig.MinDelay, supplementConfig.MaxDelay = cfg.ChinazSupplementMinDelay, cfg.ChinazSupplementMaxDelay
+		source, err = scraper.NewHybrid(scrapeConfig, cfg.AizhanCooldown, supplementConfig, cfg.ChinazSupplementCooldown)
+	} else {
+		source, err = scraper.NewChinaz(scrapeConfig)
+	}
 	if err != nil {
 		logger.Error("create scraper", "error", err)
 		os.Exit(1)
 	}
+	logger.Info("SEO collection source configured", "provider", cfg.SourceProvider, "min_delay", cfg.ScrapeMinDelay, "max_delay", cfg.ScrapeMaxDelay)
 	workerService := collector.New(st, source, cfg.WorkerCount, cfg.JobPollInterval, cfg.CollectionRetryDelays, logger)
 	workerService.Start(rootCtx)
 	certificateChecker, err := certificate.NewAgentFallbackChecker(

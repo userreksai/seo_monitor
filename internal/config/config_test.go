@@ -13,6 +13,45 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestSourceSelection(t *testing.T) {
+	for _, provider := range []string{"", "aizhan", "chinaz"} {
+		t.Run(provider, func(t *testing.T) {
+			t.Setenv("SOURCE_PROVIDER", provider)
+			t.Setenv("SOURCE_BASE_URL", "")
+			t.Setenv("SCRAPE_MIN_DELAY", "")
+			t.Setenv("SCRAPE_MAX_DELAY", "")
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if provider == "chinaz" {
+				if cfg.SourceBaseURL != "https://seo.chinaz.com" || cfg.ScrapeMinDelay != 3*time.Second {
+					t.Fatal("Chinaz fallback broken")
+				}
+			} else if cfg.SourceProvider != "aizhan" || cfg.SourceBaseURL != "https://www.aizhan.com" || cfg.ScrapeMinDelay != 10*time.Second || cfg.ScrapeMaxDelay != 20*time.Second {
+				t.Fatal("Aizhan defaults broken")
+			}
+		})
+	}
+}
+
+func TestUnsafeAizhanConfigurationRejected(t *testing.T) {
+	for key, value := range map[string]string{
+		"SOURCE_PROVIDER": "unknown", "SOURCE_BASE_URL": "https://seo.chinaz.com",
+		"WORKER_COUNT": "2", "SCRAPE_MIN_DELAY": "3s", "SCRAPE_MAX_DELAY": "2m",
+		"AIZHAN_COOLDOWN": "0s", "SCRAPE_TIMEOUT": "0s", "STALE_JOB_AFTER": "1m",
+		"CHINAZ_SUPPLEMENT_MIN_DELAY": "0s", "CHINAZ_SUPPLEMENT_MAX_DELAY": "2s", "CHINAZ_SUPPLEMENT_COOLDOWN": "0s",
+	} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv("SOURCE_PROVIDER", "aizhan")
+			t.Setenv(key, value)
+			if _, err := Load(); err == nil {
+				t.Fatal("unsafe configuration accepted")
+			}
+		})
+	}
+}
+
 func TestCertificateRetentionDays(t *testing.T) {
 	t.Setenv("CERTIFICATE_RETENTION_DAYS", "7")
 	cfg, err := Load()

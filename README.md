@@ -1,8 +1,10 @@
 # 域名权重每日采集服务（Go + MongoDB）
 
-本项目每天从 `https://seo.chinaz.com/{domain}` 获取截图红框中的数据，写入一个**全新的 MongoDB 数据库 `seo_monitor`**。现有的 `monitor_nodes` 不会被使用或修改。
+本项目默认每天从爱站 `https://www.aizhan.com/cha/{domain}/` 获取主要 SEO 数据，再从站长工具补充 APPPC 排名、分类、注册人、邮箱和到期日，写入 MongoDB 数据库 `seo_monitor`。设置 `SOURCE_PROVIDER=chinaz` 并切换对应 URL 可使用原站长工具完整采集器。现有的 `monitor_nodes` 不会被使用或修改。
 
-采集字段包括：
+爱站并非所有字段都与站长工具一一对应；实际字段核对、旧配置迁移、请求频率和容量说明见 [爱站数据源说明](docs/aizhan-source.md)。
+
+数据库兼容以下字段；实际能否获取取决于来源，爱站暂缺字段见上方说明：
 
 - 全网流量原文及区间（`traffic_text`、`traffic_min`、`traffic_max`）
 - 百度 PC、百度移动、搜狗、必应、360、神马、PR 权重
@@ -202,9 +204,9 @@ DOMAINS_FILE=domains.json
 CERTIFICATE_DOMAINS_FILE=certificate_domains.json
 ```
 
-默认只有一个采集 Worker，每次请求随机间隔 3–8 秒。即使域名扩到几百个，也建议先保持低并发，避免给来源站造成压力或触发限流。
+爱站模式只允许一个采集 Worker，每次请求完成后随机间隔 10–20 秒，同一出口只运行一个采集后端实例。进程内限流不支持多个副本共享；域名扩量前应检查成功率和任务积压。
 
-采集遇到验证码、HTTP 429/5xx、SEO 结果表缺失，或空结果页的动态权重接口失败时，任务会持久化排队重试，不会占用 Worker 原地等待。默认在 10 分钟、30 分钟、1 小时后各重试一次，第 4 次仍失败才标记为最终失败：
+爱站遇到验证码、HTTP 403/429、重定向或关键权重缺失，会暂停整个来源，默认冷却 15 分钟，连续失败逐次翻倍至 1 小时，并遵守更长的 `Retry-After`。冷却期间不领取新任务。网络错误和无 `Retry-After` 的 5xx 最多进行两次节流请求。失败任务持久化排队，默认在 10 分钟、30 分钟、1 小时后各重试一次，实际执行还需等待来源冷却；第 4 次任务尝试仍失败才标记为最终失败：
 
 ```dotenv
 COLLECTION_RETRY_DELAYS=10m,30m,1h
@@ -438,7 +440,7 @@ db.collection_jobs.find({status: "failed"}).sort({queued_at: -1}).limit(100)
 
 ```text
 cmd/server/                  程序入口、定时器、优雅退出
-internal/scraper/            站长工具 HTML 采集与解析
+internal/scraper/            爱站/站长工具 HTML 采集与解析
 internal/store/              MongoDB、唯一索引、持久任务队列
 internal/collector/          Worker 与日期逻辑
 internal/certificate/        TLS 证书读取与并发刷新

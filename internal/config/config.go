@@ -27,6 +27,12 @@ type Config struct {
 	AuthTrustedProxyCIDRs       []netip.Prefix
 	AllowedOrigins              []string
 	EnsureIndexes               bool
+	SourceProvider              string
+	AizhanCooldown              time.Duration
+	ChinazSupplementBaseURL     string
+	ChinazSupplementMinDelay    time.Duration
+	ChinazSupplementMaxDelay    time.Duration
+	ChinazSupplementCooldown    time.Duration
 	SourceBaseURL               string
 	SourceDataURL               string
 	UserAgent                   string
@@ -65,6 +71,13 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	provider := strings.ToLower(env("SOURCE_PROVIDER", "aizhan"))
+	baseURL := "https://www.aizhan.com"
+	minDelay, maxDelay := 10*time.Second, 20*time.Second
+	if provider == "chinaz" {
+		baseURL = "https://seo.chinaz.com"
+		minDelay, maxDelay = 3*time.Second, 8*time.Second
+	}
 	retryDelays, err := durationList(env("COLLECTION_RETRY_DELAYS", "10m,30m,1h"))
 	if err != nil {
 		return Config{}, fmt.Errorf("COLLECTION_RETRY_DELAYS 无效: %w", err)
@@ -87,12 +100,18 @@ func Load() (Config, error) {
 		AuthTrustedProxyCIDRs:       trustedProxyCIDRs,
 		AllowedOrigins:              splitCSV(os.Getenv("CORS_ALLOWED_ORIGINS")),
 		EnsureIndexes:               envBool("ENSURE_INDEXES", true),
-		SourceBaseURL:               env("SOURCE_BASE_URL", "https://seo.chinaz.com"),
+		SourceProvider:              provider,
+		AizhanCooldown:              envDuration("AIZHAN_COOLDOWN", 15*time.Minute),
+		ChinazSupplementBaseURL:     env("CHINAZ_SUPPLEMENT_BASE_URL", "https://seo.chinaz.com"),
+		ChinazSupplementMinDelay:    envDuration("CHINAZ_SUPPLEMENT_MIN_DELAY", 3*time.Second),
+		ChinazSupplementMaxDelay:    envDuration("CHINAZ_SUPPLEMENT_MAX_DELAY", 8*time.Second),
+		ChinazSupplementCooldown:    envDuration("CHINAZ_SUPPLEMENT_COOLDOWN", 15*time.Minute),
+		SourceBaseURL:               env("SOURCE_BASE_URL", baseURL),
 		SourceDataURL:               env("SOURCE_DATA_URL", "https://othertool.chinaz.com"),
 		UserAgent:                   env("SCRAPE_USER_AGENT", "seo-monitor/1.0 (daily metrics collector; contact your administrator)"),
 		ScrapeTimeout:               envDuration("SCRAPE_TIMEOUT", 25*time.Second),
-		ScrapeMinDelay:              envDuration("SCRAPE_MIN_DELAY", 3*time.Second),
-		ScrapeMaxDelay:              envDuration("SCRAPE_MAX_DELAY", 8*time.Second),
+		ScrapeMinDelay:              envDuration("SCRAPE_MIN_DELAY", minDelay),
+		ScrapeMaxDelay:              envDuration("SCRAPE_MAX_DELAY", maxDelay),
 		ScrapeRetries:               envInt("SCRAPE_RETRIES", 3),
 		MaxResponseBytes:            int64(envInt("MAX_RESPONSE_BYTES", 3*1024*1024)),
 		WorkerCount:                 envInt("WORKER_COUNT", 1),
@@ -126,6 +145,26 @@ func Load() (Config, error) {
 		cfg.TitleAgentToken = cfg.CertificateAgentToken
 	}
 
+	if provider != "aizhan" && provider != "chinaz" {
+		return Config{}, fmt.Errorf("SOURCE_PROVIDER 必须为 aizhan 或 chinaz")
+	}
+	if provider == "aizhan" {
+		if cfg.ChinazSupplementMinDelay < 3*time.Second || cfg.ChinazSupplementMaxDelay < cfg.ChinazSupplementMinDelay || cfg.ChinazSupplementMaxDelay > time.Minute || cfg.ChinazSupplementCooldown < time.Minute || cfg.ChinazSupplementCooldown > time.Hour {
+			return Config{}, fmt.Errorf("Chinaz 补充采集要求 3s <= MIN_DELAY <= MAX_DELAY <= 1m、1m <= COOLDOWN <= 1h")
+		}
+		if strings.Contains(strings.ToLower(cfg.SourceBaseURL), "chinaz.com") {
+			return Config{}, fmt.Errorf("爱站模式请将 SOURCE_BASE_URL 改为 https://www.aizhan.com；回退请设置 SOURCE_PROVIDER=chinaz")
+		}
+		if cfg.WorkerCount != 1 || cfg.ScrapeMinDelay < 10*time.Second || cfg.ScrapeMaxDelay > time.Minute {
+			return Config{}, fmt.Errorf("爱站模式要求 WORKER_COUNT=1、SCRAPE_MIN_DELAY >= 10s、SCRAPE_MAX_DELAY <= 1m")
+		}
+		if cfg.AizhanCooldown < time.Minute || cfg.AizhanCooldown > time.Hour {
+			return Config{}, fmt.Errorf("AIZHAN_COOLDOWN 必须在 1m 到 1h 之间")
+		}
+		if cfg.ScrapeTimeout <= 0 || cfg.ScrapeTimeout > time.Minute || cfg.StaleJobAfter < 5*time.Minute {
+			return Config{}, fmt.Errorf("爱站模式要求 0 < SCRAPE_TIMEOUT <= 1m、STALE_JOB_AFTER >= 5m")
+		}
+	}
 	if cfg.WorkerCount < 1 || cfg.WorkerCount > 4 {
 		return Config{}, fmt.Errorf("WORKER_COUNT 必须在 1 到 4 之间")
 	}
