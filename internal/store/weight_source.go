@@ -3,16 +3,19 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
+
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+
 	"seo-monitor/internal/model"
 )
 
 // Retain old values for inspection, but never notify on a failed refresh.
 // Supplemental failures cannot invalidate successful primary weights.
-func (s *Store) invalidateWeightAttempt(ctx context.Context, id primitive.ObjectID) error {
+func (s *Store) invalidateWeightAttempt(ctx context.Context, id primitive.ObjectID, cause error) error {
 	if s.metricSource == "chinaz_supplement" {
 		return nil
 	}
@@ -24,7 +27,15 @@ func (s *Store) invalidateWeightAttempt(ctx context.Context, id primitive.Object
 	if err != nil {
 		return err
 	}
-	_, err = s.metrics.UpdateOne(ctx, bson.M{"domain": job.Domain, "snapshot_date": job.SnapshotDate}, bson.M{"$set": bson.M{"weight_valid": false}})
+	source := s.metricSource
+	if source == "" {
+		source = "chinaz"
+	}
+	pipeline, buildErr := weightFailureUpdate(source, time.Now().UTC(), collectionErrorMessage(cause))
+	if buildErr != nil {
+		return buildErr
+	}
+	_, err = s.metrics.UpdateOne(ctx, bson.M{"domain": job.Domain, "snapshot_date": job.SnapshotDate}, pipeline)
 	return err
 }
 

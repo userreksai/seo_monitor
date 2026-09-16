@@ -168,6 +168,7 @@ func main() {
 	}
 	var source collector.Scraper
 	var supplement collector.Scraper
+	var chinazWeights collector.Scraper
 	if cfg.SourceProvider == "aizhan" {
 		supplementConfig := scrapeConfig
 		supplementConfig.BaseURL = cfg.ChinazSupplementBaseURL
@@ -178,7 +179,7 @@ func main() {
 		if err == nil {
 			c, err = scraper.NewChinazSupplement(supplementConfig, cfg.ChinazSupplementCooldown)
 			if err == nil {
-				source, supplement = scraper.NewWeightFallback(a, c), c
+				source, supplement, chinazWeights = a, c, c.Weights()
 			}
 		}
 	} else {
@@ -194,6 +195,12 @@ func main() {
 	}
 	workerService := collector.New(st, source, cfg.WorkerCount, cfg.JobPollInterval, cfg.CollectionRetryDelays, logger.With("source", cfg.SourceProvider))
 	workerService.Start(rootCtx)
+	var chinazWeightService *collector.Service
+	if chinazWeights != nil {
+		chinazWeightService = collector.New(st.ChinazWeightStore(), chinazWeights, 1, cfg.JobPollInterval, cfg.CollectionRetryDelays, logger.With("source", "chinaz"))
+		chinazWeightService.Start(rootCtx)
+		logger.Info("daily weight sources configured", "sources", []string{"aizhan", "chinaz"}, "storage", "weight_snapshots")
+	}
 	var supplementService *collector.Service
 	if supplement != nil {
 		supplementService = collector.New(supplementStore, supplement, 1, cfg.JobPollInterval, cfg.CollectionRetryDelays,
@@ -304,11 +311,16 @@ func main() {
 		defer close(weightBackfillDone)
 		weightCtx, weightCancel := context.WithTimeout(rootCtx, 5*time.Minute)
 		backfilledSources, weightErr := st.InitializeWeightSources(weightCtx)
-		weightCancel()
+		defer weightCancel()
 		if weightErr != nil {
 			logger.Warn("historical weight source backfill incomplete; unverified history will not be compared", "error", weightErr)
 		}
 		logger.Info("weight source fields ready", "backfilled", backfilledSources)
+		snapshots, snapshotErr := st.InitializeWeightSnapshots(weightCtx)
+		if snapshotErr != nil {
+			logger.Warn("historical dual-source snapshots backfill incomplete", "error", snapshotErr)
+		}
+		logger.Info("dual-source snapshots ready", "backfilled", snapshots)
 	}()
 
 	<-rootCtx.Done()
@@ -318,6 +330,9 @@ func main() {
 		logger.Error("HTTP shutdown failed", "error", err)
 	}
 	workerService.Wait()
+	if chinazWeightService != nil {
+		chinazWeightService.Wait()
+	}
 	if supplementService != nil {
 		supplementService.Wait()
 	}

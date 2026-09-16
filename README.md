@@ -206,13 +206,13 @@ CERTIFICATE_DOMAINS_FILE=certificate_domains.json
 
 爱站模式只允许一个采集 Worker，每次请求完成后随机间隔 10–20 秒，同一出口只运行一个采集后端实例。进程内限流不支持多个副本共享；域名扩量前应检查成功率和任务积压。
 
-爱站权重与站长工具补充字段使用独立队列、worker 和字段更新，任一来源成功就写库，互不等待、互不覆盖。普通超时、空响应、解析错误和普通 5xx 只重试当前任务；只有源站 HTTP 403/429、明确安全验证或失败响应带有效 `Retry-After` 才暂停对应来源，默认冷却 15 分钟，连续封禁逐次翻倍至 1 小时，并遵守更长的 `Retry-After`。Agent 自身容量不足不会触发爱站长冷却。网络错误和无 `Retry-After` 的 5xx 最多进行两次节流请求。失败任务持久化排队，默认在 10 分钟、30 分钟、1 小时后各重试一次；第 4 次任务尝试仍失败才标记为最终失败：
+爱站权重、站长权重与站长工具补充字段使用三个独立队列、worker 和字段更新，任一来源成功就写库，互不等待、互不覆盖。普通超时、空响应、解析错误和普通 5xx 只重试当前任务；只有源站 HTTP 403/429、明确安全验证或失败响应带有效 `Retry-After` 才暂停对应来源，默认冷却 15 分钟，连续封禁逐次翻倍至 1 小时，并遵守更长的 `Retry-After`。Agent 自身容量不足不会触发爱站长冷却。网络错误和无 `Retry-After` 的 5xx 最多进行两次节流请求。失败任务持久化排队，默认在 10 分钟、30 分钟、1 小时后各重试一次；第 4 次任务尝试仍失败才标记为最终失败：
 
 ```dotenv
 COLLECTION_RETRY_DELAYS=10m,30m,1h
 ```
 
-配置 `AIZHAN_AGENT_URL` 后，Agent 普通请求失败（含 HTTP 400、超时、空页）或权重解析不完整时，会按原有间隔由 master 直连爱站复测一次。复测成功的 `collection_route` 为 `direct:master-recheck`；两边都失败后尝试站长之家权重；站长也失败才进入任务延后重试。明确的源站限流、封禁或验证码仍先冷却，不通过换出口重试。此功能只需更新主控，无需新增配置，详见 [爱站采集说明](docs/aizhan-source.md)。
+配置 `AIZHAN_AGENT_URL` 后，Agent 普通请求失败（含 HTTP 400、超时、空页）或权重解析不完整时，会按原有间隔由 master 直连爱站复测一次。复测成功的 `collection_route` 为 `direct:master-recheck`；两边都失败后仅爱站任务延后重试。站长权重每天独立采集，无论爱站是否成功，两站结果都分别保留。明确的源站限流、封禁或验证码仍先冷却，不通过换出口重试。此功能只需更新主控，无需新增配置，详见 [爱站采集说明](docs/aizhan-source.md)。
 
 ## 三、服务器源码部署（不使用 Docker）
 
@@ -374,7 +374,7 @@ Content-Type: application/json
 | `DELETE` | `/api/v1/domains/{id}` | 软删除/归档 |
 | `POST` | `/api/v1/domains/{id}/collect` | 手动排队采集单个域名 |
 | `POST` | `/api/v1/collect` | 排队采集全部启用域名 |
-| `GET` | `/api/v1/collect/progress` | 当天权重采集进度；`supplement` 为独立的站长工具补充进度 |
+| `GET` | `/api/v1/collect/progress` | 当天两站权重任务合计进度；`sources` 分来源，`supplement` 为补充进度 |
 | `GET` | `/api/v1/domains/{id}/latest` | 最新快照 |
 | `GET` | `/api/v1/domains/{id}/metrics?from=2026-01-01&to=2026-07-10` | 趋势数据 |
 | `GET` | `/api/v1/search?field=domain&q=example&status=failed&sort_by=traffic&sort_order=asc&page=1&limit=50` | 按指定字段搜索域名及最新指标；`status=failed` 筛选最近采集失败；`sort_by` 支持 `traffic`、`weight`、`rank`，`sort_order` 支持 `asc`、`desc` |
@@ -456,4 +456,4 @@ scripts/build.sh             兼容入口，转发到根目录 build.sh
 deploy/seo-monitor.service   Linux systemd 服务配置
 ```
 
-权重支持爱站失败后回退站长之家，并按每日实际来源控制变化通知，详见 [权重来源与升级说明](docs/weight-source-fallback.md)。
+默认爱站模式每天独立采集爱站和站长权重，在 `weight_snapshots.aizhan/chinaz` 分别保留；顶层兼容字段仍优先展示有效爱站数据。历史来源自动迁移，通知脚本此次不改动。数据库结构、查询接口、任务进度和升级说明见 [双源每日快照](docs/dual-source-snapshots.md)。

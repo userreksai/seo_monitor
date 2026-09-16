@@ -64,6 +64,7 @@ var latestSearchFields = map[string]latestSearchField{
 type Store struct {
 	inflight           *sync.Map
 	supplement         *Store
+	chinazWeights      *Store
 	metricSource       string
 	client             *mongo.Client
 	db                 *mongo.Database
@@ -529,8 +530,8 @@ func (s *Store) ArchiveDomain(ctx context.Context, id primitive.ObjectID) error 
 		"$set":   bson.M{"status": "canceled", "finished_at": now},
 		"$unset": bson.M{"dedupe_key": ""},
 	})
-	if s.supplement != nil {
-		_, err := s.supplement.jobs.UpdateMany(ctx, bson.M{"domain_id": id, "status": "queued"}, bson.M{
+	for _, extra := range s.secondaryStores() {
+		_, err := extra.jobs.UpdateMany(ctx, bson.M{"domain_id": id, "status": "queued"}, bson.M{
 			"$set": bson.M{"status": "canceled", "finished_at": now}, "$unset": bson.M{"dedupe_key": ""},
 		})
 		if err != nil {
@@ -560,14 +561,20 @@ func (s *Store) QueueAll(ctx context.Context, snapshotDate time.Time, requestedB
 
 func (s *Store) QueueDomain(ctx context.Context, id primitive.ObjectID, snapshotDate time.Time, requestedBy string, force bool) (model.CollectionJob, bool, error) {
 	job, added, err := s.queueDomain(ctx, id, snapshotDate, requestedBy, force)
-	if err != nil || s.supplement == nil {
+	if err != nil {
 		return job, added, err
 	}
-	extra, extraAdded, err := s.supplement.queueDomain(ctx, id, snapshotDate, requestedBy, force)
-	if !added && extraAdded {
-		job = extra
+	for _, child := range s.secondaryStores() {
+		extra, extraAdded, queueErr := child.queueDomain(ctx, id, snapshotDate, requestedBy, force)
+		if !added && extraAdded {
+			job = extra
+		}
+		added = added || extraAdded
+		if queueErr != nil {
+			return job, added, queueErr
+		}
 	}
-	return job, added || extraAdded, err
+	return job, added, nil
 }
 
 func (s *Store) queueDomain(ctx context.Context, id primitive.ObjectID, snapshotDate time.Time, requestedBy string, force bool) (model.CollectionJob, bool, error) {
@@ -586,7 +593,21 @@ func (s *Store) queueDomain(ctx context.Context, id primitive.ObjectID, snapshot
 			return model.CollectionJob{}, false, countErr
 		}
 		if count > 0 {
-			return model.CollectionJob{}, false, nil
+			// Older Aizhan jobs may have succeeded using Chinaz fallback. They do
+			// not prove that this day's Aizhan snapshot exists.
+			if s.metricSource == "aizhan" {
+				actual, checkErr := s.metrics.CountDocuments(ctx, bson.M{"domain_id": id, "snapshot_date": snapshotDate, "$or": bson.A{
+					bson.M{"weight_snapshots.aizhan.valid": true}, bson.M{"weight_source": "aizhan", "weight_valid": true},
+				}}, options.Count().SetLimit(1))
+				if checkErr != nil {
+					return model.CollectionJob{}, false, checkErr
+				}
+				if actual > 0 {
+					return model.CollectionJob{}, false, nil
+				}
+			} else {
+				return model.CollectionJob{}, false, nil
+			}
 		}
 	}
 
@@ -652,8 +673,15 @@ func (s *Store) SaveJobResult(ctx context.Context, job model.CollectionJob, metr
 	}
 	filter := bson.M{"domain": job.Domain, "snapshot_date": job.SnapshotDate}
 	var err error
-	if s.metricSource == "" {
-		_, err = s.metrics.ReplaceOne(ctx, filter, metric, options.Replace().SetUpsert(true))
+	if s.metricSource != "chinaz_supplement" {
+		pipeline, buildErr := weightSnapshotUpdate(metric, s.metricSource == "")
+		if buildErr != nil {
+			return buildErr
+		}
+		_, err = s.metrics.UpdateOne(ctx, filter, pipeline, options.Update().SetUpsert(true))
+		if mongo.IsDuplicateKeyError(err) {
+			_, err = s.metrics.UpdateOne(ctx, filter, pipeline, options.Update().SetUpsert(true))
+		}
 	} else {
 		update, buildErr := sourceMetricUpdate(metric, s.metricSource)
 		if buildErr != nil {
@@ -678,7 +706,7 @@ func (s *Store) SaveJobResult(ctx context.Context, job model.CollectionJob, metr
 }
 
 func (s *Store) MarkJobFailed(ctx context.Context, id primitive.ObjectID, cause error) error {
-	if err := s.invalidateWeightAttempt(ctx, id); err != nil {
+	if err := s.invalidateWeightAttempt(ctx, id, cause); err != nil {
 		return err
 	}
 	message := collectionErrorMessage(cause)
@@ -693,7 +721,7 @@ func (s *Store) MarkJobFailed(ctx context.Context, id primitive.ObjectID, cause 
 // same job and dedupe key prevents a manual or scheduled duplicate while the
 // backoff is pending.
 func (s *Store) RetryJob(ctx context.Context, id primitive.ObjectID, cause error, availableAt time.Time) error {
-	if err := s.invalidateWeightAttempt(ctx, id); err != nil {
+	if err := s.invalidateWeightAttempt(ctx, id, cause); err != nil {
 		return err
 	}
 	_, err := s.jobs.UpdateOne(ctx, bson.M{"_id": id, "status": "running"}, bson.M{
@@ -717,12 +745,12 @@ func collectionErrorMessage(cause error) string {
 
 func (s *Store) RecoverStaleJobs(ctx context.Context, olderThan time.Duration) (int64, error) {
 	var supplemental int64
-	if s.supplement != nil {
-		var err error
-		supplemental, err = s.supplement.RecoverStaleJobs(ctx, olderThan)
+	for _, child := range s.secondaryStores() {
+		count, err := child.RecoverStaleJobs(ctx, olderThan)
 		if err != nil {
 			return 0, err
 		}
+		supplemental += count
 	}
 	filter := s.staleJobFilter(time.Now().UTC().Add(-olderThan))
 	result, err := s.jobs.UpdateMany(ctx, filter, bson.M{
@@ -749,8 +777,8 @@ func (s *Store) CleanupBefore(ctx context.Context, cutoff time.Time) (CleanupRes
 		return cleaned, fmt.Errorf("delete expired collection jobs: %w", err)
 	}
 	cleaned.JobsDeleted = jobsResult.DeletedCount
-	if s.supplement != nil {
-		r, err := s.supplement.jobs.DeleteMany(ctx, filter)
+	for _, child := range s.secondaryStores() {
+		r, err := child.jobs.DeleteMany(ctx, filter)
 		if err != nil {
 			return cleaned, err
 		}
@@ -1388,6 +1416,13 @@ func (s *Store) CollectionProgress(ctx context.Context, snapshotDate time.Time) 
 	progress.Canceled = result.Canceled
 	progress.Completed = result.Succeeded + result.Failed + result.Canceled
 	progress.InProgress = result.Queued > 0 || result.Running > 0
+	if s.chinazWeights != nil {
+		chinaz, err := s.chinazWeights.CollectionProgress(ctx, snapshotDate)
+		if err != nil {
+			return progress, err
+		}
+		progress = combinedWeightProgress(progress, chinaz)
+	}
 	return progress, nil
 }
 
@@ -1451,6 +1486,9 @@ func (s *Store) SearchLatest(ctx context.Context, field, query, status, sortFiel
 		collectionLookupStage,
 		setCollectionStage,
 	}
+	if s.chinazWeights != nil {
+		pipeline = append(pipeline, preferredCollectionStages()...)
+	}
 	if len(match) > 0 {
 		pipeline = append(pipeline, bson.D{{Key: "$match", Value: match}})
 	}
@@ -1480,6 +1518,7 @@ func (s *Store) SearchLatest(ctx context.Context, field, query, status, sortFiel
 					}},
 					{Key: "metric", Value: "$metric"},
 					{Key: "collection", Value: "$collection"},
+					{Key: "weight_collections", Value: "$weight_collections"},
 				}}},
 			}},
 			{Key: "total", Value: mongo.Pipeline{
