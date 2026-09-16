@@ -151,7 +151,13 @@ func (a *Aizhan) Fetch(ctx context.Context, domain string) (model.Metric, error)
 	}
 	defer func() { <-a.slot }()
 	target := a.cfg.BaseURL + "/cha/" + url.PathEscape(normalized) + "/"
-	for attempt := 0; attempt < a.cfg.Retries; attempt++ {
+	attempts := a.cfg.Retries
+	if a.agent != nil {
+		// One Agent request, then at most one master recheck.
+		attempts = 2
+	}
+	var agentErr error
+	for attempt := 0; attempt < attempts; attempt++ {
 		if err := a.WaitReady(ctx); err != nil {
 			return model.Metric{}, err
 		}
@@ -159,8 +165,18 @@ func (a *Aizhan) Fetch(ctx context.Context, domain string) (model.Metric, error)
 		if a.agent != nil {
 			route = "agent:" + a.agent.endpoint
 		}
+		if agentErr != nil {
+			route = "direct:master-recheck"
+		}
 		a.logger.Info("Aizhan request started", "domain", normalized, "route", route, "attempt", attempt+1)
-		body, retry, retryAfter, err := a.fetchOnce(ctx, target)
+		var body []byte
+		var retry bool
+		var retryAfter time.Time
+		if agentErr != nil {
+			body, retry, retryAfter, err = a.fetchDirect(ctx, target)
+		} else {
+			body, retry, retryAfter, err = a.fetchOnce(ctx, target)
+		}
 		a.logger.Info("Aizhan response received", "domain", normalized, "route", route, "bytes", len(body), "error", err)
 		a.delay() // Delay after completion also limits slow concurrent requests.
 		if ctx.Err() != nil {
@@ -185,10 +201,20 @@ func (a *Aizhan) Fetch(ctx context.Context, domain string) (model.Metric, error)
 				return metric, nil
 			}
 		}
-		if !retry || attempt+1 == a.cfg.Retries {
-			if retryAfter.After(time.Now()) && a.agent == nil {
-				err = fmt.Errorf("%v: %w", err, &sourceHTTPError{retryAfter: retryAfter})
-			}
+		if retryAfter.After(time.Now()) && (a.agent == nil || agentErr != nil) {
+			err = fmt.Errorf("%v: %w", err, &sourceHTTPError{retryAfter: retryAfter})
+		}
+		// Respect explicit source blocking instead of switching exit IPs during
+		// its cooldown. Ordinary request/validation failures get one recheck.
+		if a.agent != nil && agentErr == nil && !sourceBlocked(err) {
+			agentErr = err
+			a.logger.Warn("Aizhan Agent failed; master recheck scheduled", "domain", normalized, "error", err)
+			continue
+		}
+		if agentErr != nil {
+			err = fmt.Errorf("Agent failed: %w; master recheck failed: %w", agentErr, err)
+		}
+		if !retry || attempt+1 == attempts {
 			if !sourceBlocked(err) {
 				return model.Metric{}, fmt.Errorf("Aizhan collection failed: %w", err)
 			}
@@ -206,6 +232,10 @@ func (a *Aizhan) fetchOnce(ctx context.Context, target string) ([]byte, bool, ti
 	if a.agent != nil {
 		return a.agent.fetch(ctx, target)
 	}
+	return a.fetchDirect(ctx, target)
+}
+
+func (a *Aizhan) fetchDirect(ctx context.Context, target string) ([]byte, bool, time.Time, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, false, time.Time{}, err

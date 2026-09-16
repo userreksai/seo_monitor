@@ -103,6 +103,7 @@ func TestAgentCapacityDoesNotOpenAizhanCircuit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	a.client.Transport = masterResponse(400, "", nil)
 	if _, err := a.Fetch(context.Background(), "first.com"); err == nil {
 		t.Fatal("busy accepted")
 	}

@@ -88,6 +88,7 @@ func TestAizhanAgentValidationAndCooldown(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			a.client.Transport = masterResponse(400, "", nil)
 			if _, err = a.Fetch(context.Background(), "www.baidu.com"); err == nil {
 				t.Fatal("invalid response accepted")
 			}
