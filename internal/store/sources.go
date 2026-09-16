@@ -12,32 +12,53 @@ import (
 	"seo-monitor/internal/model"
 )
 
-// EnableIndependentSources must run before workers and HTTP handlers start.
-// The legacy queue remains the weights queue; supplemental jobs have their own
-// durable queue, deduplication, retries and recovery.
-func (s *Store) EnableIndependentSources(ctx context.Context) (*Store, error) {
+// Each source has a durable queue, deduplication, retries and recovery.
+func (s *Store) newSourceStore(ctx context.Context, source, collection string) (*Store, error) {
 	extra := *s
 	extra.inflight = &sync.Map{}
 	extra.supplement = nil
-	extra.metricSource = "chinaz_supplement"
-	extra.jobs = s.db.Collection("chinaz_supplement_jobs")
+	extra.chinazWeights = nil
+	extra.metricSource = source
+	extra.jobs = s.db.Collection(collection)
 	_, err := extra.jobs.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "dedupe_key", Value: 1}}, Options: options.Index().SetName("uq_jobs_open").SetUnique(true).SetSparse(true)},
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "available_at", Value: 1}, {Key: "queued_at", Value: 1}}},
 		{Keys: bson.D{{Key: "domain_id", Value: 1}, {Key: "snapshot_date", Value: -1}, {Key: "queued_at", Value: -1}}},
 		{Keys: bson.D{{Key: "snapshot_date", Value: 1}}},
 	})
+	return &extra, err
+}
+
+// EnableIndependentSources must run before workers and HTTP handlers start.
+func (s *Store) EnableIndependentSources(ctx context.Context) (*Store, error) {
+	supplement, err := s.newSourceStore(ctx, "chinaz_supplement", "chinaz_supplement_jobs")
 	if err != nil {
 		return nil, err
 	}
-	s.metricSource, s.supplement = "aizhan", &extra
-	return &extra, nil
+	weights, err := s.newSourceStore(ctx, "chinaz", "chinaz_weight_jobs")
+	if err != nil {
+		return nil, err
+	}
+	s.metricSource, s.supplement, s.chinazWeights = "aizhan", supplement, weights
+	return supplement, nil
+}
+
+func (s *Store) ChinazWeightStore() *Store { return s.chinazWeights }
+func (s *Store) secondaryStores() []*Store {
+	var children []*Store
+	if s.chinazWeights != nil {
+		children = append(children, s.chinazWeights)
+	}
+	if s.supplement != nil {
+		children = append(children, s.supplement)
+	}
+	return children
 }
 
 // BackfillSupplementJobs splits existing open jobs on upgrade even when
-// QUEUE_ON_START=false. Completed supplemental jobs are never duplicated.
+// QUEUE_ON_START=false. Completed source jobs are never duplicated.
 func (s *Store) BackfillSupplementJobs(ctx context.Context) error {
-	if s.supplement == nil {
+	if len(s.secondaryStores()) == 0 {
 		return nil
 	}
 	cursor, err := s.jobs.Find(ctx, bson.M{"status": bson.M{"$in": bson.A{"queued", "running"}}})
@@ -57,8 +78,10 @@ func (s *Store) BackfillSupplementJobs(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if _, _, err := s.supplement.queueDomain(ctx, job.DomainID, job.SnapshotDate, job.RequestedBy, false); err != nil {
-			return err
+		for _, child := range s.secondaryStores() {
+			if _, _, err := child.queueDomain(ctx, job.DomainID, job.SnapshotDate, job.RequestedBy, false); err != nil {
+				return err
+			}
 		}
 	}
 	return cursor.Err()
@@ -68,8 +91,13 @@ var supplementalFields = []string{"apppc_pc_rank", "site_category", "registrant_
 
 func (s *Store) ListSourceJobs(ctx context.Context, source, status string, limit int64) ([]model.CollectionJob, error) {
 	switch source {
-	case "", "aizhan", "chinaz":
+	case "", "aizhan":
 		return s.ListJobs(ctx, status, limit)
+	case "chinaz":
+		if s.chinazWeights == nil {
+			return s.ListJobs(ctx, status, limit)
+		}
+		return s.chinazWeights.ListJobs(ctx, status, limit)
 	case "chinaz_supplement":
 		if s.supplement == nil {
 			return []model.CollectionJob{}, nil

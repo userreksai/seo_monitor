@@ -469,10 +469,24 @@ func (s *Server) domainMetrics(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "to 必须是有效日期且不早于 from")
 		return
 	}
+	source := r.URL.Query().Get("source")
+	if source != "" && source != "aizhan" && source != "chinaz" {
+		writeError(w, http.StatusBadRequest, "source 必须为 aizhan 或 chinaz")
+		return
+	}
 	items, err := s.store.Metrics(r.Context(), id, from, to)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "查询趋势失败")
 		return
+	}
+	if source != "" {
+		selected := make([]model.Metric, 0, len(items))
+		for _, item := range items {
+			if metric, ok := item.SourceWeightMetric(source); ok {
+				selected = append(selected, metric)
+			}
+		}
+		items = selected
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items), "from": from, "to": to})
 }

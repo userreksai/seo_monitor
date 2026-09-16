@@ -38,6 +38,7 @@ ensureCollection("domain_daily_metrics", {
   title: "Daily SEO metric snapshot",
   required: ["domain_id", "domain", "snapshot_date", "collected_at", "source_url", "raw_sha256"],
   properties: {
+    weight_snapshots: { bsonType: "object", description: "Independent daily snapshots keyed by aizhan/chinaz" },
     weight_source: { enum: ["aizhan", "chinaz"] },
     weight_valid: { bsonType: "bool" },
     _id: { bsonType: "objectId" },
@@ -68,7 +69,7 @@ ensureCollection("domain_daily_metrics", {
   },
 });
 
-for (const jobCollection of ["collection_jobs", "chinaz_supplement_jobs"]) {
+for (const jobCollection of ["collection_jobs", "chinaz_weight_jobs", "chinaz_supplement_jobs"]) {
 ensureCollection(jobCollection, {
   bsonType: "object",
   title: "Durable collection queue",
