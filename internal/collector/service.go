@@ -126,7 +126,7 @@ func (s *Service) collectJob(ctx context.Context, job model.CollectionJob) {
 		}
 		return
 	}
-	s.logger.Info("domain collection succeeded", "job_id", job.ID.Hex(), "domain", job.Domain)
+	s.logger.Info("domain collection succeeded", "job_id", job.ID.Hex(), "domain", job.Domain, "weight_source", metric.WeightSource)
 }
 
 func retryDelay(attempt int, delays []time.Duration) (time.Duration, bool) {

@@ -172,9 +172,14 @@ func main() {
 		supplementConfig := scrapeConfig
 		supplementConfig.BaseURL = cfg.ChinazSupplementBaseURL
 		supplementConfig.MinDelay, supplementConfig.MaxDelay = cfg.ChinazSupplementMinDelay, cfg.ChinazSupplementMaxDelay
-		source, err = scraper.NewAizhan(scrapeConfig, cfg.AizhanCooldown)
+		var a *scraper.Aizhan
+		var c *scraper.ChinazSupplement
+		a, err = scraper.NewAizhan(scrapeConfig, cfg.AizhanCooldown)
 		if err == nil {
-			supplement, err = scraper.NewChinazSupplement(supplementConfig, cfg.ChinazSupplementCooldown)
+			c, err = scraper.NewChinazSupplement(supplementConfig, cfg.ChinazSupplementCooldown)
+			if err == nil {
+				source, supplement = scraper.NewWeightFallback(a, c), c
+			}
 		}
 	} else {
 		source, err = scraper.NewChinaz(scrapeConfig)
@@ -294,6 +299,18 @@ func main() {
 		}
 	}()
 
+	weightBackfillDone := make(chan struct{})
+	go func() {
+		defer close(weightBackfillDone)
+		weightCtx, weightCancel := context.WithTimeout(rootCtx, 5*time.Minute)
+		backfilledSources, weightErr := st.InitializeWeightSources(weightCtx)
+		weightCancel()
+		if weightErr != nil {
+			logger.Warn("historical weight source backfill incomplete; unverified history will not be compared", "error", weightErr)
+		}
+		logger.Info("weight source fields ready", "backfilled", backfilledSources)
+	}()
+
 	<-rootCtx.Done()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
@@ -304,5 +321,6 @@ func main() {
 	if supplementService != nil {
 		supplementService.Wait()
 	}
+	<-weightBackfillDone
 	logger.Info("shutdown complete")
 }

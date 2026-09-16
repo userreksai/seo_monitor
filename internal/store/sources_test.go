@@ -32,6 +32,9 @@ func TestIndependentMetricWritesBothOrders(t *testing.T) {
 	name := "owner"
 	primary := model.Metric{DomainID: primitive.NewObjectID(), Domain: "example.com", SnapshotDate: time.Now().UTC().Truncate(24 * time.Hour), CollectedAt: time.Now().UTC(), SourceURL: "https://www.aizhan.com/cha/example.com/", RawSHA256: strings.Repeat("a", 64), BaiduPCWeight: &pc}
 	extra := primary
+	primary.BaiduMobile = &pc
+	primary.MarkWeights("chinaz") // Aizhan queue can succeed through Chinaz fallback.
+	primary.SourceURL = "https://seo.chinaz.com/example.com"
 	extra.SourceURL = "https://seo.chinaz.com/example.com"
 	extra.RawSHA256 = strings.Repeat("b", 64)
 	extra.APPPCPCrank = &rank
@@ -80,6 +83,14 @@ func TestIndependentMetricWritesBothOrders(t *testing.T) {
 			t.Fatal("provenance mixed")
 		}
 		results = append(results, doc)
+		if doc["weight_source"] != "chinaz" {
+			t.Fatal("fallback provenance overwritten by supplement")
+		}
+		encoded, _ := bson.Marshal(doc)
+		var stored model.Metric
+		if err := bson.Unmarshal(encoded, &stored); err != nil || stored.WeightValid == nil || !*stored.WeightValid {
+			t.Fatal("weight validity lost")
+		}
 	}
 	if !reflect.DeepEqual(results[0], results[1]) {
 		t.Fatal("completion order changes snapshot")

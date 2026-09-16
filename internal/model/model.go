@@ -56,6 +56,8 @@ type AuthSession struct {
 // Metric is the once-per-day snapshot. Pointers preserve the distinction
 // between a real zero and a value that the source did not return.
 type Metric struct {
+	WeightSource            string             `bson:"weight_source,omitempty" json:"weight_source,omitempty"`
+	WeightValid             *bool              `bson:"weight_valid,omitempty" json:"weight_valid,omitempty"`
 	ID                      primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
 	DomainID                primitive.ObjectID `bson:"domain_id" json:"domain_id"`
 	Domain                  string             `bson:"domain" json:"domain"`

@@ -194,6 +194,7 @@ func (a *Aizhan) Fetch(ctx context.Context, domain string) (model.Metric, error)
 				metric.CollectionRoute = route
 				metric.SourceURL, metric.RawSHA256 = target, hex.EncodeToString(hash[:])
 				metric.CollectedAt = time.Now().UTC()
+				metric.MarkWeights("aizhan")
 				a.mu.Lock()
 				a.failures = 0
 				a.cooldown = time.Time{}

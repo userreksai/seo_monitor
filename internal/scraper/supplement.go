@@ -50,6 +50,7 @@ func NewChinazSupplement(cfg Config, cooldown time.Duration) (*ChinazSupplement,
 		return nil, err
 	}
 	c.client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	c.baseCooldown = cooldown
 	return &ChinazSupplement{c: c, cooldown: cooldown}, nil
 }
 
@@ -62,15 +63,18 @@ func (s *ChinazSupplement) Fetch(ctx context.Context, domain string) (model.Metr
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	m, err := s.c.fetchSupplement(ctx, domain)
+	return m, s.recordResult(err)
+}
+
+func (s *ChinazSupplement) recordResult(err error) error {
 	if err == nil {
 		s.c.rateMu.Lock()
 		s.c.supplementFailures = 0
-		s.c.cooldownUntil = time.Time{}
 		s.c.rateMu.Unlock()
-		return m, nil
+		return nil
 	}
 	if !sourceBlocked(err) {
-		return model.Metric{}, fmt.Errorf("Chinaz supplement failed: %w", err)
+		return err
 	}
 	s.c.rateMu.Lock()
 	s.c.supplementFailures++
@@ -88,5 +92,5 @@ func (s *ChinazSupplement) Fetch(ctx context.Context, domain string) (model.Metr
 	}
 	until := s.c.cooldownUntil
 	s.c.rateMu.Unlock()
-	return model.Metric{}, fmt.Errorf("Chinaz supplement failed (cooldown until %s): %w", until.UTC().Format(time.RFC3339), err)
+	return fmt.Errorf("Chinaz source cooling down until %s: %w", until.UTC().Format(time.RFC3339), err)
 }
