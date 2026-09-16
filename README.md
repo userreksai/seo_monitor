@@ -212,7 +212,7 @@ CERTIFICATE_DOMAINS_FILE=certificate_domains.json
 COLLECTION_RETRY_DELAYS=10m,30m,1h
 ```
 
-配置 `AIZHAN_AGENT_URL` 后，Agent 普通请求失败（含 HTTP 400、超时、空页）或权重解析不完整时，会按原有间隔由 master 直连爱站复测一次。复测成功的 `collection_route` 为 `direct:master-recheck`；两边都失败才进入任务延后重试。明确的源站限流、封禁或验证码仍先冷却，不通过换出口重试。此功能只需更新主控，无需新增配置，详见 [爱站采集说明](docs/aizhan-source.md)。
+配置 `AIZHAN_AGENT_URL` 后，Agent 普通请求失败（含 HTTP 400、超时、空页）或权重解析不完整时，会按原有间隔由 master 直连爱站复测一次。复测成功的 `collection_route` 为 `direct:master-recheck`；两边都失败后尝试站长之家权重；站长也失败才进入任务延后重试。明确的源站限流、封禁或验证码仍先冷却，不通过换出口重试。此功能只需更新主控，无需新增配置，详见 [爱站采集说明](docs/aizhan-source.md)。
 
 ## 三、服务器源码部署（不使用 Docker）
 
