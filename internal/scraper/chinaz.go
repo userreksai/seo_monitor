@@ -51,6 +51,8 @@ type Config struct {
 }
 
 type Chinaz struct {
+	requestSlot        chan struct{}
+	baseCooldown       time.Duration
 	baseURL            string
 	dataBaseURL        string
 	userAgent          string
@@ -84,6 +86,8 @@ func NewChinaz(cfg Config) (*Chinaz, error) {
 		cfg.MaxResponseBytes = 3 * 1024 * 1024
 	}
 	return &Chinaz{
+		requestSlot:      make(chan struct{}, 1),
+		baseCooldown:     15 * time.Minute,
 		baseURL:          base.String(),
 		dataBaseURL:      dataBase.String(),
 		userAgent:        cfg.UserAgent,
@@ -96,7 +100,11 @@ func NewChinaz(cfg Config) (*Chinaz, error) {
 }
 
 func (c *Chinaz) Fetch(ctx context.Context, domain string) (model.Metric, error) {
-	return c.fetchComplete(ctx, domain)
+	m, err := c.fetchComplete(ctx, domain)
+	if err == nil {
+		m.MarkWeights("chinaz")
+	}
+	return m, err
 }
 
 func (c *Chinaz) fetchComplete(ctx context.Context, domain string) (model.Metric, error) {
@@ -267,9 +275,9 @@ func extractSecretKey(body []byte) (string, error) {
 }
 
 type rankDatum struct {
-	Rank  int16 `json:"rank"`
-	UVMin int64 `json:"uv_min"`
-	UVMax int64 `json:"uv_max"`
+	Rank  *int16 `json:"rank"`
+	UVMin int64  `json:"uv_min"`
+	UVMax int64  `json:"uv_max"`
 }
 
 type rankResponse struct {
@@ -293,12 +301,21 @@ func mergeRankResponse(body []byte, metric *model.Metric) error {
 		return errors.New("weight service returned no result")
 	}
 	result := response.Result
-	metric.BaiduPCWeight = int16Pointer(result.BaiduPC.Rank)
-	metric.BaiduMobile = int16Pointer(result.BaiduMobile.Rank)
-	metric.SogouWeight = int16Pointer(result.SogouPC.Rank)
-	metric.BingWeight = int16Pointer(result.Bing.Rank)
-	metric.So360Weight = int16Pointer(result.HaosouPC.Rank)
-	metric.ShenmaWeight = int16Pointer(result.Shenma.Rank)
+	for _, pair := range []struct {
+		src *int16
+		dst **int16
+	}{
+		{result.BaiduPC.Rank, &metric.BaiduPCWeight}, {result.BaiduMobile.Rank, &metric.BaiduMobile},
+		{result.SogouPC.Rank, &metric.SogouWeight}, {result.Bing.Rank, &metric.BingWeight},
+		{result.HaosouPC.Rank, &metric.So360Weight}, {result.Shenma.Rank, &metric.ShenmaWeight},
+	} {
+		if pair.src != nil && *pair.src >= 0 && *pair.src <= 10 {
+			*pair.dst = pair.src
+		}
+	}
+	if !metric.HasBaiduWeights() {
+		return errors.New("weight service returned incomplete Baidu weights")
+	}
 	trafficMin := result.BaiduPC.UVMin + result.BaiduMobile.UVMin + result.SogouPC.UVMin + result.Bing.UVMin + result.HaosouPC.UVMin + result.Shenma.UVMin
 	trafficMax := result.BaiduPC.UVMax + result.BaiduMobile.UVMax + result.SogouPC.UVMax + result.Bing.UVMax + result.HaosouPC.UVMax + result.Shenma.UVMax
 	metric.TrafficMin = &trafficMin
@@ -469,7 +486,7 @@ func parseRank(selection *goquery.Selection) *int16 {
 		return nil
 	}
 	if rank, ok := selection.Attr("data-rank"); ok {
-		if value, err := strconv.ParseInt(strings.TrimSpace(rank), 10, 16); err == nil {
+		if value, err := strconv.ParseInt(strings.TrimSpace(rank), 10, 16); err == nil && value >= 0 && value <= 10 {
 			out := int16(value)
 			return &out
 		}
@@ -481,7 +498,7 @@ func parseRank(selection *goquery.Selection) *int16 {
 		return nil
 	}
 	value, err := strconv.ParseInt(matches[1], 10, 16)
-	if err != nil {
+	if err != nil || value < 0 || value > 10 {
 		return nil
 	}
 	out := int16(value)

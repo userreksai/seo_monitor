@@ -97,6 +97,7 @@ func sourceMetricUpdate(metric model.Metric, source string) (bson.M, error) {
 	fields := primaryFields
 	switch source {
 	case "aizhan":
+		set["weight_source"], set["weight_valid"] = metric.WeightSource, metric.WeightValid
 		set["collected_at"], set["source_url"], set["raw_sha256"] = metric.CollectedAt, metric.SourceURL, metric.RawSHA256
 	case "chinaz_supplement":
 		fields = supplementalFields

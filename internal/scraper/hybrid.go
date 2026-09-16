@@ -136,11 +136,7 @@ func (c *Chinaz) fetchSupplement(ctx context.Context, domain string) (model.Metr
 	}
 	pageURL := c.baseURL + "/" + url.PathEscape(domain)
 	read := func(target, referer string) ([]byte, error) {
-		if err := c.waitForSlot(ctx); err != nil {
-			return nil, err
-		}
-		body, _, err := c.fetchOnceWithReferer(ctx, target, referer)
-		return body, err // Durable queue retries; no burst on source blocking.
+		return c.readShared(ctx, target, referer)
 	}
 	body, err := read(pageURL, "")
 	if err != nil {

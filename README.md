@@ -455,3 +455,5 @@ certificate_domains.example.json 证书域名列表示例；安装时生成本�
 scripts/build.sh             兼容入口，转发到根目录 build.sh
 deploy/seo-monitor.service   Linux systemd 服务配置
 ```
+
+权重支持爱站失败后回退站长之家，并按每日实际来源控制变化通知，详见 [权重来源与升级说明](docs/weight-source-fallback.md)。

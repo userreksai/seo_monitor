@@ -678,6 +678,9 @@ func (s *Store) SaveJobResult(ctx context.Context, job model.CollectionJob, metr
 }
 
 func (s *Store) MarkJobFailed(ctx context.Context, id primitive.ObjectID, cause error) error {
+	if err := s.invalidateWeightAttempt(ctx, id); err != nil {
+		return err
+	}
 	message := collectionErrorMessage(cause)
 	_, err := s.jobs.UpdateOne(ctx, bson.M{"_id": id}, bson.M{
 		"$set":   bson.M{"status": "failed", "finished_at": time.Now().UTC(), "error_message": message},
@@ -690,6 +693,9 @@ func (s *Store) MarkJobFailed(ctx context.Context, id primitive.ObjectID, cause 
 // same job and dedupe key prevents a manual or scheduled duplicate while the
 // backoff is pending.
 func (s *Store) RetryJob(ctx context.Context, id primitive.ObjectID, cause error, availableAt time.Time) error {
+	if err := s.invalidateWeightAttempt(ctx, id); err != nil {
+		return err
+	}
 	_, err := s.jobs.UpdateOne(ctx, bson.M{"_id": id, "status": "running"}, bson.M{
 		"$set": bson.M{
 			"status":        "queued",

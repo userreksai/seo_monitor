@@ -38,6 +38,8 @@ ensureCollection("domain_daily_metrics", {
   title: "Daily SEO metric snapshot",
   required: ["domain_id", "domain", "snapshot_date", "collected_at", "source_url", "raw_sha256"],
   properties: {
+    weight_source: { enum: ["aizhan", "chinaz"] },
+    weight_valid: { bsonType: "bool" },
     _id: { bsonType: "objectId" },
     domain_id: { bsonType: "objectId" },
     domain: { bsonType: "string" },
