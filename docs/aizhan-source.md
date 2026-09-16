@@ -78,7 +78,11 @@
 
 主控直连仍是默认行为。2026-09-15 实际诊断中，同一域名在主控返回 HTTP 200、0 字节，在 `49.7.214.217:8002` 所在节点返回正常 HTML。这只能确认当时两条网络路径的结果不同，不能断言主控永久不可访问爱站。
 
-可选 Agent 模式仅改变爱站页面获取路径：Agent 返回原始页面 → 主控解析权重 → 写入 MongoDB。另一条独立任务由主控直连站长工具获取五个补充字段并写库。两家数据都不通过 Agent 标题解析器。爱站失败不会自动轮换节点或退回主控反复请求。
+配置 Agent 后优先由 Agent 获取爱站页面。Agent 遇到 HTTP 400、普通超时、空响应、格式错误或权重解析不完整时，主控等待原有 10–20 秒请求间隔，再直连同一爱站查询地址复测一次。复测同样校验域名、完整 PC/移动权重及响应大小；成功立即写库，失败保留两条路径的错误并交由持久队列延后重试。每次任务最多一次 Agent 请求和一次 master 复测，复测成功不会永久切换节点，下一任务仍优先 Agent。
+
+源站明确返回 403/429、验证码或封禁冷却标记时，遵守原有冷却，不通过切换出口继续请求。Agent 自身忙碌返回的 HTTP 429 属于容量不足，可以触发 master 复测。master 复测也共享串行限频，遇到明确封禁会开启爱站冷却。未配置 Agent 时保持原有主控直连行为。无需新增配置，本次复测功能只更新主控即可；master 向爱站发起请求时不携带 Agent Token。
+
+另一条独立任务由主控直连站长工具获取五个补充字段并写库，不受复测逻辑影响。两家数据都不通过 Agent 标题解析器。
 
 先升级 SituationAwareness-agent 至支持 `type=seo` 的版本，保持已有 8002 端口与共享 Token，`AGENT_MAX_TIMEOUT` 不小于主控 `SCRAPE_TIMEOUT`（默认 25s）。检查：
 
@@ -97,7 +101,7 @@ AIZHAN_AGENT_TOKEN=
 
 空的 `AIZHAN_AGENT_TOKEN` 复用 `TITLE_AGENT_TOKEN`，再回退 `CERTIFICATE_AGENT_TOKEN`；必须与目标 Agent 的 `AGENT_SHARED_TOKEN` 相同。无需把 Token 发到聊天或提交进 Git。重新启动 `seo-monitor` 使配置生效；不需要重复提交仍在排队的 498 个任务。切回主控直连时把 `AIZHAN_AGENT_URL` 清空并重启。
 
-日志 `Aizhan request started` 的 `route` 会显示 `direct` 或 `agent:http://.../api/v1/tasks`；`Aizhan response received` 显示收到的页面字节数和传输错误；`domain collection succeeded` 才代表解析、补充及入库完成。空响应会明确报告 `HTTP 200 with an empty body`。快照新增 `collection_route` 便于区分直连与 Agent 获取的结果。
+日志 `Aizhan request started` 的 `route` 显示 `direct`、`agent:http://.../api/v1/tasks` 或 `direct:master-recheck`。Agent 失败触发复测时额外记录 `Aizhan Agent failed; master recheck scheduled`，包含 Agent 的原始失败原因。`Aizhan response received` 显示页面字节数和传输错误；对应来源的 `domain collection succeeded` 才代表该来源解析及入库完成。空响应明确报告 `HTTP 200 with an empty body`。快照 `collection_route` 记录最终成功路径。
 
 Agent 只允许固定的 `https://www.aizhan.com/cha/{domain}/` 地址，禁止 URL/端口参数，不跟随重定向，最多读取 3 MiB。原始正文以 JSON base64 返回，主控再次限制响应大小、校验任务 ID/域名/来源 URL，并沿用原页面解析校验。Agent 独立限制单个 SEO 请求、完成后至少间隔 10 秒，普通超时不会启用长冷却；源站 403/429 或失败响应的 Retry-After 才冷却 15–60 分钟，并返回 `sourceBlocked` 和 `retryAt`。主控仍按 10–20 秒节流。此次更新需同时更新 Agent，旧版 Agent 自身仍会因普通超时进入长冷却。多个主控不能借同一 Agent 提升吞吐。
 
