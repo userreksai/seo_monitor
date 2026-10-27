@@ -193,7 +193,12 @@ func main() {
 	if cfg.SourceProvider == "aizhan" {
 		logger.Info("Aizhan collection route configured", "agent_url", cfg.AizhanAgentURL, "direct", cfg.AizhanAgentURL == "")
 	}
-	workerService := collector.New(st, source, cfg.WorkerCount, cfg.JobPollInterval, cfg.CollectionRetryDelays, logger.With("source", cfg.SourceProvider))
+	retryDelays := cfg.CollectionRetryDelays
+	if cfg.SourceProvider == "aizhan" {
+		retryDelays = cfg.AizhanRecheckDelays
+		logger.Info("Aizhan delayed rechecks configured", "delays", retryDelays, "interval_multipliers", []int{2, 4, 8})
+	}
+	workerService := collector.New(st, source, cfg.WorkerCount, cfg.JobPollInterval, retryDelays, logger.With("source", cfg.SourceProvider))
 	workerService.Start(rootCtx)
 	var chinazWeightService *collector.Service
 	if chinazWeights != nil {

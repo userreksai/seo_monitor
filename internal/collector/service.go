@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -15,6 +16,18 @@ import (
 type Scraper interface {
 	Fetch(context.Context, string) (model.Metric, error)
 }
+
+type recheckExhaustedError struct {
+	rounds int
+	cause  error
+}
+
+func (e *recheckExhaustedError) Error() string {
+	return fmt.Sprintf("复测 %d 次后仍失败，已忽略本轮采集: %v", e.rounds, e.cause)
+}
+
+func (e *recheckExhaustedError) Unwrap() error          { return e.cause }
+func (e *recheckExhaustedError) RecheckExhausted() bool { return true }
 
 type jobStore interface {
 	ClaimNextJob(context.Context) (model.CollectionJob, error)
@@ -95,21 +108,37 @@ func (s *Service) collectJob(ctx context.Context, job model.CollectionJob) {
 			s.logger.Info("interrupted collection job released", "job_id", job.ID.Hex(), "domain", job.Domain)
 		}
 	}()
-	metric, err := s.scraper.Fetch(ctx, job.Domain)
+	attemptSource, progressiveRetry := s.scraper.(interface {
+		FetchAttempt(context.Context, string, int) (model.Metric, error)
+	})
+	var metric model.Metric
+	var err error
+	if progressiveRetry {
+		metric, err = attemptSource.FetchAttempt(ctx, job.Domain, job.AttemptCount)
+	} else {
+		metric, err = s.scraper.Fetch(ctx, job.Domain)
+	}
 	if ctx.Err() != nil {
 		return
 	}
 	if err != nil {
-		s.logger.Warn("domain collection failed", "job_id", job.ID.Hex(), "domain", job.Domain, "error", err)
+		s.logger.Warn("domain collection failed", "job_id", job.ID.Hex(), "domain", job.Domain,
+			"retry_round", max(job.AttemptCount-1, 0), "retry_total", len(s.retryDelays), "error", err)
 		if delay, retry := retryDelay(job.AttemptCount, s.retryDelays); retry {
 			availableAt := time.Now().UTC().Add(delay)
 			if retryErr := s.store.RetryJob(ctx, job.ID, err, availableAt); retryErr != nil {
 				s.logger.Error("schedule domain retry", "job_id", job.ID.Hex(), "error", retryErr)
 			} else {
 				s.logger.Info("domain retry scheduled", "job_id", job.ID.Hex(), "domain", job.Domain,
-					"attempt", job.AttemptCount, "delay", delay, "available_at", availableAt)
+					"attempt", job.AttemptCount, "retry_round", job.AttemptCount, "retry_total", len(s.retryDelays),
+					"delay", delay, "available_at", availableAt)
 			}
 			return
+		}
+		if progressiveRetry {
+			err = &recheckExhaustedError{rounds: len(s.retryDelays), cause: err}
+			s.logger.Warn("domain retries exhausted; ignoring collection", "job_id", job.ID.Hex(), "domain", job.Domain,
+				"retry_round", max(job.AttemptCount-1, 0), "retry_total", len(s.retryDelays), "error", err)
 		}
 		if markErr := s.store.MarkJobFailed(ctx, job.ID, err); markErr != nil {
 			s.logger.Error("mark job failed", "job_id", job.ID.Hex(), "error", markErr)

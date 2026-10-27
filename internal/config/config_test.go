@@ -186,6 +186,44 @@ func TestCollectionRetryDelaysRejectsInvalidValue(t *testing.T) {
 	}
 }
 
+func TestAizhanRechecksDefaultIndependentOfLegacyRetryConfig(t *testing.T) {
+	t.Setenv("AIZHAN_RECHECK_DELAYS", "")
+	t.Setenv("COLLECTION_RETRY_DELAYS", "10m,30m,1h")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []time.Duration{time.Hour, 30 * time.Minute, 30 * time.Minute}; !reflect.DeepEqual(cfg.AizhanRecheckDelays, want) {
+		t.Fatalf("AizhanRecheckDelays = %v, want %v", cfg.AizhanRecheckDelays, want)
+	}
+	if want := []time.Duration{10 * time.Minute, 30 * time.Minute, time.Hour}; !reflect.DeepEqual(cfg.CollectionRetryDelays, want) {
+		t.Fatalf("other source retry delays changed: %v", cfg.CollectionRetryDelays)
+	}
+}
+
+func TestAizhanRecheckDelaysOverride(t *testing.T) {
+	t.Setenv("AIZHAN_RECHECK_DELAYS", "2h, 1h, 1h")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []time.Duration{2 * time.Hour, time.Hour, time.Hour}
+	if !reflect.DeepEqual(cfg.AizhanRecheckDelays, want) {
+		t.Fatalf("AizhanRecheckDelays = %v, want %v", cfg.AizhanRecheckDelays, want)
+	}
+}
+
+func TestAizhanRechecksRequireExactlyThreePositiveDelays(t *testing.T) {
+	for _, value := range []string{"1h,30m", "1h,30m,30m,30m", "1h,0s,30m", "1h,-1m,30m", "1h,invalid,30m"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("AIZHAN_RECHECK_DELAYS", value)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "AIZHAN_RECHECK_DELAYS") {
+				t.Fatalf("invalid recheck policy accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestTitleAgentDefaultsToCertificateAgent(t *testing.T) {
 	t.Setenv("CERTIFICATE_AGENT_URLS", "http://127.0.0.1:8002")
 	t.Setenv("CERTIFICATE_AGENT_TOKEN", "shared-token")

@@ -586,6 +586,21 @@ func (s *Store) queueDomain(ctx context.Context, id primitive.ObjectID, snapshot
 		return model.CollectionJob{}, false, fmt.Errorf("域名已归档")
 	}
 	if !force {
+		// Only the new Aizhan recheck policy marks exhausted jobs. Keep this
+		// day's terminal failure across automatic startup/scheduler queueing,
+		// while allowing manual retries and older unmarked failures to run.
+		if s.metricSource == "aizhan" {
+			exhausted, countErr := s.jobs.CountDocuments(ctx, bson.M{
+				"domain_id": id, "snapshot_date": snapshotDate,
+				"status": "failed", "retry_exhausted": true,
+			}, options.Count().SetLimit(1))
+			if countErr != nil {
+				return model.CollectionJob{}, false, countErr
+			}
+			if exhausted > 0 {
+				return model.CollectionJob{}, false, nil
+			}
+		}
 		count, countErr := s.jobs.CountDocuments(ctx, bson.M{
 			"domain_id": id, "snapshot_date": snapshotDate, "status": "succeeded",
 		}, options.Count().SetLimit(1))
@@ -700,7 +715,7 @@ func (s *Store) SaveJobResult(ctx context.Context, job model.CollectionJob, metr
 	now := time.Now().UTC()
 	_, err = s.jobs.UpdateOne(ctx, bson.M{"_id": job.ID}, bson.M{
 		"$set":   bson.M{"status": "succeeded", "finished_at": now},
-		"$unset": bson.M{"dedupe_key": "", "error_message": "", "available_at": ""},
+		"$unset": bson.M{"dedupe_key": "", "error_message": "", "available_at": "", "retry_exhausted": ""},
 	})
 	return err
 }
@@ -710,8 +725,13 @@ func (s *Store) MarkJobFailed(ctx context.Context, id primitive.ObjectID, cause 
 		return err
 	}
 	message := collectionErrorMessage(cause)
+	set := bson.M{"status": "failed", "finished_at": time.Now().UTC(), "error_message": message}
+	var exhausted interface{ RecheckExhausted() bool }
+	if s.metricSource == "aizhan" && errors.As(cause, &exhausted) && exhausted.RecheckExhausted() {
+		set["retry_exhausted"] = true
+	}
 	_, err := s.jobs.UpdateOne(ctx, bson.M{"_id": id}, bson.M{
-		"$set":   bson.M{"status": "failed", "finished_at": time.Now().UTC(), "error_message": message},
+		"$set":   set,
 		"$unset": bson.M{"dedupe_key": "", "available_at": ""},
 	})
 	return err
@@ -752,11 +772,27 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, olderThan time.Duration) (
 		}
 		supplemental += count
 	}
-	filter := s.staleJobFilter(time.Now().UTC().Add(-olderThan))
-	result, err := s.jobs.UpdateMany(ctx, filter, bson.M{
-		"$set":   bson.M{"status": "queued", "queued_at": time.Now().UTC(), "available_at": time.Now().UTC()},
+	now := time.Now().UTC()
+	filter := s.staleJobFilter(now.Add(-olderThan))
+	var update any = bson.M{
+		"$set":   bson.M{"status": "queued", "queued_at": now, "available_at": now},
 		"$unset": bson.M{"started_at": ""},
-	})
+	}
+	if s.metricSource == "aizhan" {
+		// A crashed process cannot confirm that its claimed attempt actually
+		// requested the source. Resume the same recheck round, just as graceful
+		// shutdown does, without charging another failure to the retry budget.
+		update = mongo.Pipeline{
+			bson.D{{Key: "$set", Value: bson.M{
+				"status": "queued", "queued_at": now, "available_at": now,
+				"attempt_count": bson.M{"$max": bson.A{
+					bson.M{"$subtract": bson.A{bson.M{"$ifNull": bson.A{"$attempt_count", 0}}, 1}}, 0,
+				}},
+			}}},
+			bson.D{{Key: "$unset", Value: "started_at"}},
+		}
+	}
+	result, err := s.jobs.UpdateMany(ctx, filter, update)
 	if err != nil {
 		return 0, err
 	}

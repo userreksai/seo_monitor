@@ -29,6 +29,7 @@ type Config struct {
 	EnsureIndexes               bool
 	SourceProvider              string
 	AizhanCooldown              time.Duration
+	AizhanRecheckDelays         []time.Duration
 	AizhanAgentURL              string
 	AizhanAgentToken            string
 	ChinazSupplementBaseURL     string
@@ -84,6 +85,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("COLLECTION_RETRY_DELAYS 无效: %w", err)
 	}
+	aizhanRechecks, err := durationList(env("AIZHAN_RECHECK_DELAYS", "1h,30m,30m"))
+	if err != nil || len(aizhanRechecks) != 3 {
+		return Config{}, fmt.Errorf("AIZHAN_RECHECK_DELAYS 必须包含 3 个大于 0 的复测间隔，例如 1h,30m,30m")
+	}
 	cfg := Config{
 		MongoDBURI:                  env("MONGODB_URI", "mongodb://localhost:27017"),
 		MongoDBDatabase:             env("MONGODB_DATABASE", "seo_monitor"),
@@ -104,6 +109,7 @@ func Load() (Config, error) {
 		EnsureIndexes:               envBool("ENSURE_INDEXES", true),
 		SourceProvider:              provider,
 		AizhanCooldown:              envDuration("AIZHAN_COOLDOWN", 15*time.Minute),
+		AizhanRecheckDelays:         aizhanRechecks,
 		AizhanAgentURL:              strings.TrimSpace(os.Getenv("AIZHAN_AGENT_URL")),
 		AizhanAgentToken:            strings.TrimSpace(os.Getenv("AIZHAN_AGENT_TOKEN")),
 		ChinazSupplementBaseURL:     env("CHINAZ_SUPPLEMENT_BASE_URL", "https://seo.chinaz.com"),

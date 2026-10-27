@@ -205,6 +205,7 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     printf 'MAX_RESPONSE_BYTES=3145728\n'
     printf 'WORKER_COUNT=1\n'
     printf 'JOB_POLL_INTERVAL=2s\n'
+    printf 'AIZHAN_RECHECK_DELAYS=1h,30m,30m\n'
     printf 'COLLECTION_RETRY_DELAYS=10m,30m,1h\n'
     printf 'STALE_JOB_AFTER=20m\n'
     printf 'RETENTION_DAYS=60\n'
@@ -258,6 +259,7 @@ else
       title_workers_seen = 0
       title_cron_seen = 0
       title_run_on_start_seen = 0
+      aizhan_recheck_delays_seen = 0
     }
     /^HTTP_ADDR=/ {
       if (!http_updated) {
@@ -295,6 +297,7 @@ else
     /^TITLE_WORKERS=/ { title_workers_seen = 1 }
     /^TITLE_CRON=/ { title_cron_seen = 1 }
     /^TITLE_RUN_ON_START=/ { title_run_on_start_seen = 1 }
+    /^AIZHAN_RECHECK_DELAYS=/ { aizhan_recheck_delays_seen = 1 }
     { print }
     END {
       if (!http_updated) print "HTTP_ADDR=127.0.0.1:10001"
@@ -320,6 +323,7 @@ else
       if (!title_workers_seen) print "TITLE_WORKERS=10"
       if (!title_cron_seen) print "TITLE_CRON=\"15 4 * * *\""
       if (!title_run_on_start_seen) print "TITLE_RUN_ON_START=true"
+      if (!aizhan_recheck_delays_seen) print "AIZHAN_RECHECK_DELAYS=1h,30m,30m"
     }
   ' "$INSTALL_DIR/.env" >"$ENV_TEMP"
   mv "$ENV_TEMP" "$INSTALL_DIR/.env"
