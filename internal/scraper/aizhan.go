@@ -31,6 +31,8 @@ type Aizhan struct {
 	slot         chan struct{}
 	mu           sync.Mutex
 	next         time.Time
+	lastFinished time.Time
+	lastDelay    time.Duration
 	cooldown     time.Time
 	failures     int
 	baseCooldown time.Duration
@@ -112,13 +114,50 @@ func aizhanWait(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func (a *Aizhan) delay() {
+func aizhanAttemptMultiplier(attemptCount int) time.Duration {
+	switch {
+	case attemptCount <= 1:
+		return 1
+	case attemptCount == 2:
+		return 2
+	case attemptCount == 3:
+		return 4
+	default:
+		return 8
+	}
+}
+
+func scaledAizhanDelay(delay, multiplier time.Duration) time.Duration {
+	const maxDuration = time.Duration(1<<63 - 1)
+	if delay > maxDuration/multiplier {
+		return maxDuration
+	}
+	return delay * multiplier
+}
+
+// prepareAttempt applies this job's pacing before its first request as well as
+// between any Agent/master or transport retries. Reuse the last sampled jitter
+// and never shorten a gap already promised by the preceding request.
+func (a *Aizhan) prepareAttempt(multiplier time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.lastFinished.IsZero() {
+		until := a.lastFinished.Add(scaledAizhanDelay(a.lastDelay, multiplier))
+		if until.After(a.next) {
+			a.next = until
+		}
+	}
+}
+
+func (a *Aizhan) delay(multiplier time.Duration) {
 	d := a.cfg.MinDelay
 	if a.cfg.MaxDelay > d {
 		d += time.Duration(rand.Int64N(int64(a.cfg.MaxDelay - d)))
 	}
 	a.mu.Lock()
-	a.next = time.Now().Add(d)
+	a.lastFinished = time.Now()
+	a.lastDelay = d
+	a.next = a.lastFinished.Add(scaledAizhanDelay(d, multiplier))
 	a.mu.Unlock()
 }
 
@@ -140,6 +179,13 @@ func (a *Aizhan) fail(retryAfter time.Time) {
 }
 
 func (a *Aizhan) Fetch(ctx context.Context, domain string) (model.Metric, error) {
+	return a.FetchAttempt(ctx, domain, 1)
+}
+
+// FetchAttempt derives pacing from the durable job attempt count. The initial
+// collection uses normal spacing; its three rechecks use 2x, 4x and 8x spacing.
+func (a *Aizhan) FetchAttempt(ctx context.Context, domain string, attemptCount int) (model.Metric, error) {
+	multiplier := aizhanAttemptMultiplier(attemptCount)
 	normalized, err := domainutil.Normalize(domain)
 	if err != nil {
 		return model.Metric{}, err
@@ -158,6 +204,7 @@ func (a *Aizhan) Fetch(ctx context.Context, domain string) (model.Metric, error)
 	}
 	var agentErr error
 	for attempt := 0; attempt < attempts; attempt++ {
+		a.prepareAttempt(multiplier)
 		if err := a.WaitReady(ctx); err != nil {
 			return model.Metric{}, err
 		}
@@ -168,7 +215,8 @@ func (a *Aizhan) Fetch(ctx context.Context, domain string) (model.Metric, error)
 		if agentErr != nil {
 			route = "direct:master-recheck"
 		}
-		a.logger.Info("Aizhan request started", "domain", normalized, "route", route, "attempt", attempt+1)
+		a.logger.Info("Aizhan request started", "domain", normalized, "route", route, "attempt", attempt+1,
+			"collection_attempt", attemptCount, "delay_multiplier", int(multiplier))
 		var body []byte
 		var retry bool
 		var retryAfter time.Time
@@ -178,7 +226,7 @@ func (a *Aizhan) Fetch(ctx context.Context, domain string) (model.Metric, error)
 			body, retry, retryAfter, err = a.fetchOnce(ctx, target)
 		}
 		a.logger.Info("Aizhan response received", "domain", normalized, "route", route, "bytes", len(body), "error", err)
-		a.delay() // Delay after completion also limits slow concurrent requests.
+		a.delay(multiplier) // Delay after completion also limits slow concurrent requests.
 		if ctx.Err() != nil {
 			return model.Metric{}, ctx.Err()
 		}
